@@ -52,6 +52,8 @@ signals:
     void pausedChanged();
     void settingsBusyChanged();
 private:
+    void queueClipboardCapture();
+    void retryClipboardCapture();
     void clipboardChanged();
     void refresh();
     void setStatus(QString);
@@ -69,10 +71,10 @@ private:
     std::unique_ptr<QSystemTrayIcon> tray_;
     std::unique_ptr<QMenu> menu_;
     std::unique_ptr<QQmlApplicationEngine> engine_;
-    QTimer macPoll_,queryTimer_;
+    QTimer clipboardPoll_,captureTimer_,queryTimer_;
     QVariantList entries_;
     QString query_,status_,summary_;
     bool paused_=false,ready_=false,refreshing_=false,refreshDirty_=false,settingsBusy_=false,restoring_=false,writingClipboard_=false,closing_=false,capturing_=false,retryCapture_=false;
-    int pendingCaptures_=0;
+    int pendingCaptures_=0,captureRetries_=0;
     quint64 lastSequence_=0,epoch_=0;
 };

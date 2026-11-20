@@ -36,7 +36,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libx11-dev libgl-dev libegl-dev libxcb-cursor0 libxkbcommon-x11-0 patchelf
+          sudo apt-get install -y libx11-dev libgl-dev libegl-dev libxcb-cursor0 libxkbcommon-x11-0 patchelf xvfb xauth
 
       - name: Set up Xmake
         uses: xmake-io/github-action-setup-xmake@v1
@@ -79,12 +79,23 @@ jobs:
         shell: bash
         run: xmake run clipdeck-tests
 
-      # The offscreen clipboard backend is suitable for this integration
-      # test on Linux. OS-native clipboard/hotkey tests need a desktop session.
-      - name: Run Qt integration tests (Linux)
+      - name: Run native clipboard integration tests (Linux X11)
         if: runner.os == 'Linux'
         env:
-          QT_QPA_PLATFORM: offscreen
+          QT_QPA_PLATFORM: xcb
+          QT_QUICK_BACKEND: software
+        run: xvfb-run -a xmake run clipdeck-integration-tests
+
+      - name: Run native clipboard integration tests (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          QT_QUICK_BACKEND: software
+        run: xmake run clipdeck-integration-tests
+
+      - name: Run native clipboard integration tests (macOS)
+        if: runner.os == 'macOS'
+        env:
           QT_QUICK_BACKEND: software
         run: xmake run clipdeck-integration-tests
 

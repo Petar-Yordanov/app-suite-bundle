@@ -43,8 +43,22 @@ bool isFileMime(const QString& name){
         if(n.contains(s))return true;
     return false;
 }
-bool hasMarker(const QStringList& formats){
-    return std::any_of(formats.begin(),formats.end(),[](const QString& f){return clip::sensitiveMarker(bytes(f));});
+QString policyName(const QString& f){
+    for(auto* name:{"CanIncludeInClipboardHistory","CanUploadToCloudClipboard"}){
+        const auto wrapped=QStringLiteral("application/x-qt-windows-mime;value=\"")+QString::fromLatin1(name)+"\"";
+        if(f.compare(QString::fromLatin1(name),Qt::CaseInsensitive)==0||
+           f.compare(wrapped,Qt::CaseInsensitive)==0||f.compare(wrapped+";index=0",Qt::CaseInsensitive)==0)
+            return QString::fromLatin1(name);
+    }
+    return {};
+}
+bool hasMarker(const QStringList& formats,const native::ClipboardInfo& info){
+    return std::any_of(formats.begin(),formats.end(),[&](const QString& f){
+        if(!clip::sensitiveMarker(bytes(f)))return false;
+        const auto name=policyName(f);
+        if(!name.isEmpty()&&info.allowedPolicyFormats.contains(name,Qt::CaseInsensitive))return false;
+        return true;
+    });
 }
 QString exceptionText(const std::exception&){return QStringLiteral("Storage operation failed. Check permissions and available disk space.");}
 }
@@ -54,7 +68,7 @@ Controller::Controller(QString directory,QObject* parent):
     QDir().mkpath(directory_);
     QImageReader::setAllocationLimit(64);
     clipboard_=QGuiApplication::clipboard();
-    lastSequence_=native::clipboardInfo().sequence;
+    lastSequence_=native::clipboardSequence();
     worker_=new QObject;worker_->moveToThread(&thread_);
     connect(&thread_,&QThread::finished,worker_,&QObject::deleteLater);thread_.start();
     const bool persistent=settings_.value("persistent",true).toBool();
@@ -69,10 +83,19 @@ Controller::Controller(QString directory,QObject* parent):
             QMetaObject::invokeMethod(this,[this]{ready_=true;setStatus("Clipboard history ready.");refresh();},Qt::QueuedConnection);
         }catch(const std::exception&){QMetaObject::invokeMethod(this,[this]{setStatus("Cannot initialize clipboard history storage.");},Qt::QueuedConnection);}
     },Qt::QueuedConnection);
-    connect(clipboard_,&QClipboard::dataChanged,this,&Controller::clipboardChanged);
-#ifdef Q_OS_MACOS
-    macPoll_.setInterval(350);macPoll_.setTimerType(Qt::CoarseTimer);
-    connect(&macPoll_,&QTimer::timeout,this,&Controller::clipboardChanged);macPoll_.start();
+    captureTimer_.setSingleShot(true);
+    connect(&captureTimer_,&QTimer::timeout,this,&Controller::clipboardChanged);
+    connect(clipboard_,&QClipboard::dataChanged,this,&Controller::queueClipboardCapture);
+#if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
+    // Independent of the QML window; polling is a cheap change-counter check,
+    // not repeated reading/decoding of clipboard contents.
+    clipboardPoll_.setInterval(250);clipboardPoll_.setTimerType(Qt::CoarseTimer);
+    connect(&clipboardPoll_,&QTimer::timeout,this,[this]{
+        if(capturing_||captureTimer_.isActive()||writingClipboard_)return;
+        auto sequence=native::clipboardSequence();
+        if(sequence&&sequence!=lastSequence_)queueClipboardCapture();
+    });
+    clipboardPoll_.start();
 #endif
     queryTimer_.setSingleShot(true);queryTimer_.setInterval(150);
     connect(&queryTimer_,&QTimer::timeout,this,&Controller::refresh);
@@ -97,7 +120,7 @@ Controller::Controller(QString directory,QObject* parent):
     updater_.configure(settings_.value("updateFeed").toString());
 }
 Controller::~Controller(){
-    closing_=true;macPoll_.stop();queryTimer_.stop();engine_.reset();tray_.reset();
+    closing_=true;clipboardPoll_.stop();captureTimer_.stop();queryTimer_.stop();engine_.reset();tray_.reset();
     if(worker_&&thread_.isRunning()){
         const bool persistent=settings_.value("persistent",true).toBool();
         auto path=storePath(false);
@@ -143,33 +166,59 @@ void Controller::applyShortcut(const QString& shortcut){
     QString error;auto seq=QKeySequence::fromString(shortcut,QKeySequence::PortableText);
     if(!hotkey_.registerShortcut(seq,error))setStatus(error);
 }
+void Controller::queueClipboardCapture(){
+    if(closing_||writingClipboard_)return;
+    ++epoch_;
+    if(capturing_){retryCapture_=true;return;}
+    captureRetries_=0;
+    // Give a clipboard writer time to release its native lock.
+    if(!captureTimer_.isActive())captureTimer_.start(25);
+}
+void Controller::retryClipboardCapture(){
+    if(closing_||captureTimer_.isActive())return;
+    if(++captureRetries_<=8)captureTimer_.start(75);
+    else {
+        lastSequence_=native::clipboardSequence();
+        setStatus("Clipboard capture could not complete; copy the item again.");
+    }
+}
 void Controller::clipboardChanged(){
     if(closing_||writingClipboard_)return;
     if(capturing_){++epoch_;retryCapture_=true;return;}
     QScopedValueRollback<bool> guard(capturing_,true);
+    retryCapture_=false;
     struct Retry {
         Controller* self;bool& needed;
-        ~Retry(){if(needed){needed=false;QTimer::singleShot(0,self,[s=self]{s->clipboardChanged();});}}
+        ~Retry(){if(needed){needed=false;self->retryClipboardCapture();}}
     } retry{this,retryCapture_};
     auto info=native::clipboardInfo();
-    if(info.sequence&&info.sequence==lastSequence_)return;
+    // A notification may precede delayed rendering, so an unchanged
+    // sequence is not grounds to ignore an event or a scheduled retry.
     lastSequence_=info.sequence;
-    if(info.secret||hasMarker(info.formats)){
+    if(!info.available){retryClipboardCapture();return;}
+    if(info.secret||hasMarker(info.formats,info)){
         ++epoch_;
         QMetaObject::invokeMethod(worker_,[this]{if(store_)store_->protect({});},Qt::QueuedConnection);
         setStatus("Sensitive clipboard content excluded.");return;
     }
     const auto* mime=clipboard_->mimeData();
-    if(mime&&mime->hasFormat(SelfMime))return;
+    const bool self=mime&&mime->hasFormat(SelfMime);
+    if(retryCapture_||self)return;
     ++epoch_;
     // Release the previous file-snapshot lease even if the new clipboard is sensitive.
     QMetaObject::invokeMethod(worker_,[this]{if(store_)store_->protect({});},Qt::QueuedConnection);
-    if(paused_||!ready_||settingsBusy_||!mime)return;
-    if(hasMarker(mime->formats())){setStatus("Sensitive clipboard content excluded.");return;}
-    if(pendingCaptures_>=2){setStatus("Clipboard history busy; this item was not recorded.");return;}
-    clip::Capture capture; auto formats=mime->formats();
+    if(paused_)return;
+    if(!ready_||settingsBusy_||!mime){retryClipboardCapture();return;}
+    auto formats=mime->formats();
+    if(retryCapture_)return;
+    if(hasMarker(formats,info)){setStatus("Sensitive clipboard content excluded.");return;}
+    if(pendingCaptures_>=2){retryClipboardCapture();return;}
+    clip::Capture capture;
     if(formats.size()>static_cast<int>(clip::MaxFormats)){setStatus("Clipboard item has too many formats.");return;}
-    const auto urls=mime->urls();
+    const bool hasUrls=mime->hasUrls();
+    if(retryCapture_)return;
+    const auto urls=hasUrls?mime->urls():QList<QUrl>{};
+    if(retryCapture_)return;
     if(urls.size()>static_cast<qsizetype>(clip::MaxNodes)){setStatus("Too many clipboard file references.");return;}
     bool localFiles=false;
     for(const auto& url:urls)if(url.isLocalFile()){localFiles=true;capture.files.push_back(clip::path(bytes(url.toLocalFile())));}
@@ -178,15 +227,19 @@ void Controller::clipboardChanged(){
     if(localFiles&&urls.size()>1)capture.preview+=" (+"+std::to_string(urls.size()-1)+")";
     quint64 total=0;bool hasImage=false;
     for(const auto& type:formats){
-        if(type==SelfMime)continue;
+        if(type==SelfMime||!policyName(type).isEmpty())continue;
         if(localFiles&&isFileMime(type))continue;
         if(!localFiles&&isFileMime(type)&&type!="text/uri-list"){
-            // Virtual file promises cannot be snapshotted safely without the provider.
-            setStatus("Unsupported virtual file clipboard item.");return;
+            // Ignore transport-only metadata, not the entire clipboard item.
+            // Virtual file promises are still not saved as filesystem snapshots.
+            continue;
         }
         if(type=="application/x-qt-image"){
-            if(!mime->hasImage())continue;
+            const bool hasQtImage=mime->hasImage();
+            if(retryCapture_)return;
+            if(!hasQtImage)continue;
             auto image=qvariant_cast<QImage>(mime->imageData());
+            if(retryCapture_)return;
             if(image.isNull()||static_cast<quint64>(image.sizeInBytes())>clip::MaxPayload){setStatus("Clipboard image exceeds capture memory limit.");return;}
             QByteArray png;QBuffer buffer(&png);buffer.open(QIODevice::WriteOnly);
             if(!image.save(&buffer,"PNG")){setStatus("Could not encode clipboard image.");return;}
@@ -197,6 +250,7 @@ void Controller::clipboardChanged(){
             hasImage=true;continue;
         }
         auto data=mime->data(type);
+        if(retryCapture_)return;
         if(static_cast<quint64>(data.size())>clip::MaxPayload-total){setStatus("Clipboard item exceeds capture memory limit.");return;}
         total+=data.size();
         if(type.startsWith("image/"))hasImage=true;
@@ -212,7 +266,15 @@ void Controller::clipboardChanged(){
     if(!localFiles&&capture.preview.empty())capture.preview=capture.formats.empty()?"":capture.formats.front().type;
     // Reject changes/races and newly observed secret markers before anything is sent to storage.
     auto after=native::clipboardInfo();
-    if(retryCapture_||after.secret||hasMarker(after.formats)||(info.sequence&&after.sequence!=info.sequence)){setStatus("Clipboard changed or was marked sensitive during capture.");return;}
+    if(after.secret||hasMarker(after.formats,after)){
+        lastSequence_=after.sequence;setStatus("Sensitive clipboard content excluded.");return;
+    }
+    if(!after.available||retryCapture_||(info.sequence&&after.sequence!=info.sequence)){
+        // Windows can advance its sequence when a lazily rendered format is
+        // fetched. Retry from a fresh MIME object instead of losing the item.
+        retryClipboardCapture();return;
+    }
+    lastSequence_=after.sequence;
     if(capture.formats.empty()&&capture.files.empty())return;
     ++pendingCaptures_;
     QMetaObject::invokeMethod(worker_,[this,capture=std::move(capture)]() mutable {
@@ -273,7 +335,7 @@ void Controller::restore(const QString& id){
 #endif
             }
             mime->setData(SelfMime,"1");writingClipboard_=true;clipboard_->setMimeData(mime);writingClipboard_=false;
-            lastSequence_=native::clipboardInfo().sequence;
+            lastSequence_=native::clipboardSequence();
             restoring_=false;setStatus("Restored to system clipboard. Paste normally.");hideUi();
         },Qt::QueuedConnection);
     },Qt::QueuedConnection);
