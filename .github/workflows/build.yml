@@ -26,6 +26,7 @@ jobs:
 
     env:
       QT_VERSION: '6.8.3'
+      APP_VERSION: '1.0.0'
       ARTIFACT: ClipDeck-${{ matrix.os }}-${{ matrix.arch }}
 
     steps:
@@ -102,19 +103,74 @@ jobs:
           mkdir -p artifacts
           xmake run clipdeck-bench | tee "artifacts/${ARTIFACT}-benchmark.txt"
 
-      - name: Deploy Windows executable and Qt
+      - name: Build Windows installer (Inno Setup)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $exe = Get-ChildItem build -Recurse -File -Filter clipdeck.exe | Select-Object -First 1
           if (!$exe) { throw "clipdeck.exe not found" }
-          $bundle = Join-Path $PWD "artifacts/ClipDeck"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $bundle = Join-Path $PWD "dist/ClipDeck"
           New-Item -ItemType Directory -Force $bundle | Out-Null
           Copy-Item $exe.FullName (Join-Path $bundle "clipdeck.exe")
-          & "$env:QT_ROOT_DIR/bin/windeployqt.exe" --release --qmldir "$PWD/UI" "$bundle/clipdeck.exe"
+          & "$env:QT_ROOT_DIR/bin/windeployqt.exe" --release --no-compiler-runtime --qmldir "$PWD/UI" "$bundle/clipdeck.exe"
           if ($LASTEXITCODE -ne 0) { throw "windeployqt failed" }
 
-      - name: Deploy macOS application
+          # App-local release CRT avoids installing a separate system runtime.
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -version '[17.0,18.0)' -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (!$vs) { throw "Visual Studio 2022 not found" }
+          $crt = Get-ChildItem (Join-Path $vs "VC\Redist\MSVC\*\x64\Microsoft.VC143.CRT") -Directory |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          if (!$crt) { throw "MSVC x64 redistributable DLLs not found" }
+          Copy-Item "$($crt.FullName)\*.dll" $bundle
+          Copy-Item "artifacts/$env:ARTIFACT-benchmark.txt" "$bundle/benchmark.txt"
+
+          $iscc = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+          if ($iscc) { $compiler = $iscc.Source }
+          else { $compiler = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
+          if (!(Test-Path $compiler)) { throw "Inno Setup compiler not found" }
+
+          @'
+          [Setup]
+          AppId=org.clipdeck.app
+          AppName=ClipDeck
+          AppVersion={#AppVersion}
+          AppPublisher=ClipDeck
+          DefaultDirName={localappdata}\Programs\ClipDeck
+          DefaultGroupName=ClipDeck
+          PrivilegesRequired=lowest
+          ArchitecturesAllowed=x64compatible
+          ArchitecturesInstallIn64BitMode=x64compatible
+          UninstallDisplayIcon={app}\clipdeck.exe
+          OutputDir=artifacts
+          OutputBaseFilename=ClipDeck-windows-x64-setup
+          Compression=lzma2
+          SolidCompression=yes
+          WizardStyle=modern
+          CloseApplications=yes
+          RestartApplications=no
+
+          [Files]
+          Source: "dist\ClipDeck\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+          [Tasks]
+          Name: desktopicon; Description: "Create a desktop shortcut"; Flags: unchecked
+
+          [Icons]
+          Name: "{autoprograms}\ClipDeck"; Filename: "{app}\clipdeck.exe"
+          Name: "{autodesktop}\ClipDeck"; Filename: "{app}\clipdeck.exe"; Tasks: desktopicon
+
+          [Registry]
+          Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "ClipDeck"; Flags: uninsdeletevalue
+
+          [Run]
+          Filename: "{app}\clipdeck.exe"; Description: "Launch ClipDeck"; Flags: nowait postinstall skipifsilent
+          '@ | Set-Content -Encoding utf8 "clipdeck-installer.iss"
+          & $compiler "/DAppVersion=$env:APP_VERSION" "clipdeck-installer.iss"
+          if (!(Test-Path "artifacts/$env:ARTIFACT-setup.exe")) { throw "Installer was not created" }
+
+      - name: Build macOS installer (productbuild)
         if: runner.os == 'macOS'
         shell: bash
         run: |
@@ -140,12 +196,21 @@ jobs:
           PLIST
           fi
           "$QT_ROOT_DIR/bin/macdeployqt" dist/ClipDeck.app -qmldir="$PWD/UI" -always-overwrite
+          plist="dist/ClipDeck.app/Contents/Info.plist"
+          for item in "CFBundleIdentifier:org.clipdeck.app" "CFBundleShortVersionString:$APP_VERSION" "CFBundleVersion:$APP_VERSION"; do
+            key="${item%%:*}"
+            value="${item#*:}"
+            /usr/libexec/PlistBuddy -c "Set :$key $value" "$plist" ||
+              /usr/libexec/PlistBuddy -c "Add :$key string $value" "$plist"
+          done
+          mkdir -p dist/ClipDeck.app/Contents/Resources
+          cp "artifacts/${ARTIFACT}-benchmark.txt" dist/ClipDeck.app/Contents/Resources/benchmark.txt
           # Ad-hoc signing is sufficient for local testing but is not notarization.
           codesign --force --deep --sign - dist/ClipDeck.app
-          cp "artifacts/${ARTIFACT}-benchmark.txt" dist/benchmark.txt
-          ditto -c -k --sequesterRsrc dist "artifacts/${ARTIFACT}.zip"
+          codesign --verify --deep --strict dist/ClipDeck.app
+          productbuild --component dist/ClipDeck.app /Applications "artifacts/${ARTIFACT}.pkg"
 
-      - name: Deploy Linux executable and Qt
+      - name: Build Linux installer (Debian package)
         if: runner.os == 'Linux'
         shell: bash
         run: |
@@ -170,32 +235,61 @@ jobs:
           # Smoke-check that the deployed binary can start without the SDK.
           env -u LD_LIBRARY_PATH -u QT_PLUGIN_PATH -u QML2_IMPORT_PATH -u QML_IMPORT_PATH \
             QT_QPA_PLATFORM=offscreen "$bundle/clipdeck" --version
-          cp "artifacts/${ARTIFACT}-benchmark.txt" "$bundle/benchmark.txt"
-          tar -C dist -czf "artifacts/${ARTIFACT}.tar.gz" ClipDeck
+          # Package the private Qt runtime under /opt; no Qt SDK needed on target.
+          package="$PWD/dist/deb-root"
+          mkdir -p "$package/DEBIAN" "$package/opt" "$package/usr/bin" \
+            "$package/usr/share/applications" "$package/usr/share/doc/clipdeck"
+          mv "$bundle" "$package/opt/clipdeck"
+          ln -s /opt/clipdeck/clipdeck "$package/usr/bin/clipdeck"
+          cp "artifacts/${ARTIFACT}-benchmark.txt" "$package/usr/share/doc/clipdeck/benchmark.txt"
 
-      - name: Upload Windows application directory
+          cat > "$package/DEBIAN/control" <<EOF
+          Package: clipdeck
+          Version: $APP_VERSION
+          Architecture: amd64
+          Maintainer: ClipDeck
+          Section: utils
+          Priority: optional
+          Depends: libc6 (>= 2.39), libstdc++6, libgcc-s1, libgl1, libegl1, libopengl0, libfontconfig1, libfreetype6, libdbus-1-3, libx11-6, libx11-xcb1, libxcb1, libxcb-cursor0, libxcb-icccm4, libxcb-image0, libxcb-keysyms1, libxcb-render-util0, libxcb-randr0, libxcb-render0, libxcb-shape0, libxcb-shm0, libxcb-sync1, libxcb-xfixes0, libxcb-xkb1, libxkbcommon0, libxkbcommon-x11-0, libwayland-client0, libwayland-cursor0, libwayland-egl1, libdrm2, libglib2.0-0t64, libssl3t64, libz1
+          Description: Lightweight local clipboard history manager
+           Native Qt clipboard manager with local history, search and file snapshots.
+          EOF
+          cat > "$package/usr/share/applications/org.clipdeck.app.desktop" <<'DESKTOP'
+          [Desktop Entry]
+          Type=Application
+          Name=ClipDeck
+          Comment=Local clipboard history
+          Exec=/opt/clipdeck/clipdeck --show
+          Icon=edit-paste
+          Terminal=false
+          Categories=Utility;
+          DESKTOP
+          dpkg-deb --root-owner-group --build "$package" "artifacts/${ARTIFACT}.deb"
+          dpkg-deb --info "artifacts/${ARTIFACT}.deb"
+
+      - name: Upload Windows installer
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ env.ARTIFACT }}
-          path: ClipboardManager/artifacts/
-          if-no-files-found: error
-          retention-days: 14
-
-      - name: Upload macOS archive directly
-        if: runner.os == 'macOS'
-        uses: actions/upload-artifact@v7
-        with:
-          path: ClipboardManager/artifacts/${{ env.ARTIFACT }}.zip
+          path: ClipboardManager/artifacts/${{ env.ARTIFACT }}-setup.exe
           archive: false
           if-no-files-found: error
           retention-days: 14
 
-      - name: Upload Linux archive directly
+      - name: Upload macOS installer
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v7
+        with:
+          path: ClipboardManager/artifacts/${{ env.ARTIFACT }}.pkg
+          archive: false
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload Linux installer
         if: runner.os == 'Linux'
         uses: actions/upload-artifact@v7
         with:
-          path: ClipboardManager/artifacts/${{ env.ARTIFACT }}.tar.gz
+          path: ClipboardManager/artifacts/${{ env.ARTIFACT }}.deb
           archive: false
           if-no-files-found: error
           retention-days: 14
