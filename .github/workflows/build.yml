@@ -20,12 +20,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: windows, arch: x64,   runner: windows-2022,     xmake_arch: x64,    qt_host: windows,       qt_arch: win64_msvc2022_64 }
-          - { os: windows, arch: arm64, runner: windows-11-arm,   xmake_arch: arm64,  qt_host: windows_arm64, qt_arch: win64_msvc2022_arm64 }
-          - { os: linux,   arch: x64,   runner: ubuntu-24.04,     xmake_arch: x86_64, qt_host: linux,         qt_arch: linux_gcc_64 }
-          - { os: linux,   arch: arm64, runner: ubuntu-24.04-arm, xmake_arch: arm64,  qt_host: linux_arm64,   qt_arch: linux_gcc_arm64 }
-          - { os: macos,   arch: x64,   runner: macos-15-intel,   xmake_arch: x86_64, qt_host: mac,           qt_arch: clang_64 }
-          - { os: macos,   arch: arm64, runner: macos-15,         xmake_arch: arm64,  qt_host: mac,           qt_arch: clang_64 }
+          - { os: windows, arch: x64,   runner: windows-2022, xmake_platform: windows, xmake_arch: x64,    qt_host: windows, qt_arch: win64_msvc2022_64 }
+          - { os: linux,   arch: x64,   runner: ubuntu-24.04, xmake_platform: linux,   xmake_arch: x86_64, qt_host: linux,   qt_arch: linux_gcc_64 }
+          - { os: macos,   arch: arm64, runner: macos-15,     xmake_platform: macosx,  xmake_arch: arm64,  qt_host: mac,     qt_arch: clang_64 }
 
     env:
       QT_VERSION: '6.8.3'
@@ -54,16 +51,30 @@ jobs:
           arch: ${{ matrix.qt_arch }}
           cache: true
 
-      - name: Configure and build (Release)
+      - name: Configure, build and test (Windows MSVC)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          xmake f -y -p windows -a x64 -m release --vs=2022 --desktop=y "--qt=$env:QT_ROOT_DIR"
+          xmake build -y clipdeck
+          xmake build -y clipdeck-tests
+          xmake build -y clipdeck-integration-tests
+          xmake build -y clipdeck-bench
+          xmake run clipdeck-tests
+
+      - name: Configure and build (Linux/macOS Release)
+        if: runner.os != 'Windows'
         shell: bash
         run: |
-          xmake f -y -m release -a "${{ matrix.xmake_arch }}" --desktop=y --qt="$QT_ROOT_DIR"
+          xmake f -y -p "${{ matrix.xmake_platform }}" -m release -a "${{ matrix.xmake_arch }}" --desktop=y --qt="$QT_ROOT_DIR"
           xmake build -y clipdeck
           xmake build -y clipdeck-tests
           xmake build -y clipdeck-integration-tests
           xmake build -y clipdeck-bench
 
       - name: Run storage tests
+        if: runner.os != 'Windows'
         shell: bash
         run: xmake run clipdeck-tests
 
@@ -76,7 +87,16 @@ jobs:
           QT_QUICK_BACKEND: software
         run: xmake run clipdeck-integration-tests
 
-      - name: Run storage benchmark
+      - name: Run storage benchmark (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          New-Item -ItemType Directory -Force artifacts | Out-Null
+          xmake run clipdeck-bench | Tee-Object -FilePath "artifacts/$env:ARTIFACT-benchmark.txt"
+
+      - name: Run storage benchmark (Linux/macOS)
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           mkdir -p artifacts

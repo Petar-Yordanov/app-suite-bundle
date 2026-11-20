@@ -52,7 +52,7 @@ bool validId(const std::string& s) {
 }
 bool relativeSafe(const fs::path& p) {
     if (p.empty() || p.is_absolute() || p.has_root_path()) return false;
-    for (auto& c:p) if (c==".." || c==".") return false;
+    for (const auto& c:p) if (c==".." || c==".") return false;
     return true;
 }
 bool atMost(std::uint64_t& current,std::uint64_t addition,std::uint64_t maximum) {
@@ -83,7 +83,7 @@ std::string manifest(const Entry& e) {
 }
 std::uint64_t chargeFor(const fs::path& dir) {
     std::uint64_t total=NodeCharge; std::size_t nodes=0;
-    for(auto& n:fs::recursive_directory_iterator(dir)) {
+    for(const auto& n:fs::recursive_directory_iterator(dir)) {
         check(++nodes<MaxNodes+MaxFormats+20,"Too many stored files");
         auto s=n.symlink_status();
         check(!fs::is_symlink(s) && (fs::is_directory(s)||fs::is_regular_file(s)),"Unsafe stored entry");
@@ -239,7 +239,7 @@ Result Store::put(Capture c) {
             check(canonical!=storeRoot&&!relativeSafe(a)&&!relativeSafe(b),"Cannot snapshot clipboard history's own storage tree");
             check(atMost(charge,NodeCharge,limits_.bytes),"Copied files exceed storage limit");
             e.roots.push_back(utf8(rel));addNode(src,rel);
-            if(fs::is_directory(fs::symlink_status(src)))for(auto& d:fs::recursive_directory_iterator(src)){
+            if(fs::is_directory(fs::symlink_status(src)))for(const auto& d:fs::recursive_directory_iterator(src)){
                 auto child=d.path().lexically_relative(src);check(relativeSafe(child),"Unsafe copied path");addNode(d.path(),rel/child);
             }
         }
