@@ -1,0 +1,21 @@
+[Desktop Entry]
+Type=Application
+Name=Screenshot Tool
+Comment=Capture screenshots directly to the clipboard
+Exec=screenshottool --show
+Icon=accessories-screenshot
+Terminal=false
+Categories=Graphics;Utility;
+Actions=Region;Screen;Window;
+
+[Desktop Action Region]
+Name=Capture region
+Exec=screenshottool --region
+
+[Desktop Action Screen]
+Name=Capture screen
+Exec=screenshottool --screen
+
+[Desktop Action Window]
+Name=Capture window
+Exec=screenshottool --window
