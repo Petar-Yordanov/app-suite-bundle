@@ -55,7 +55,13 @@ package("imageviewer-libheif")
             "-DBUILD_TESTING=OFF",
             "-DBUILD_DOCUMENTATION=OFF"
         }
-        import("package.tools.cmake").install(package, configs)
+        local opt = {}
+        if package:is_plat("windows") then
+            -- libde265 is static: its headers must not mark calls as dllimport.
+            -- Apply this while compiling libheif itself, not merely the viewer.
+            opt.cxflags = {"-DLIBDE265_STATIC_BUILD"}
+        end
+        import("package.tools.cmake").install(package, configs, opt)
     end)
     on_test(function (package)
         assert(package:has_cfuncs("heif_have_decoder_for_format", {includes = "libheif/heif.h"}))
