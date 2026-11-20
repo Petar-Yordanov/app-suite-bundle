@@ -108,12 +108,11 @@ jobs:
         run: |
           $exe = Get-ChildItem build -Recurse -File -Filter clipdeck.exe | Select-Object -First 1
           if (!$exe) { throw "clipdeck.exe not found" }
-          $bundle = Join-Path $PWD "dist/ClipDeck"
+          $bundle = Join-Path $PWD "artifacts/ClipDeck"
           New-Item -ItemType Directory -Force $bundle | Out-Null
           Copy-Item $exe.FullName (Join-Path $bundle "clipdeck.exe")
           & "$env:QT_ROOT_DIR/bin/windeployqt.exe" --release --qmldir "$PWD/UI" "$bundle/clipdeck.exe"
           if ($LASTEXITCODE -ne 0) { throw "windeployqt failed" }
-          Compress-Archive -Path "$bundle/*" -DestinationPath "artifacts/$env:ARTIFACT.zip"
 
       - name: Deploy macOS application
         if: runner.os == 'macOS'
@@ -143,7 +142,8 @@ jobs:
           "$QT_ROOT_DIR/bin/macdeployqt" dist/ClipDeck.app -qmldir="$PWD/UI" -always-overwrite
           # Ad-hoc signing is sufficient for local testing but is not notarization.
           codesign --force --deep --sign - dist/ClipDeck.app
-          ditto -c -k --sequesterRsrc --keepParent dist/ClipDeck.app "artifacts/${ARTIFACT}.zip"
+          cp "artifacts/${ARTIFACT}-benchmark.txt" dist/benchmark.txt
+          ditto -c -k --sequesterRsrc dist "artifacts/${ARTIFACT}.zip"
 
       - name: Deploy Linux executable and Qt
         if: runner.os == 'Linux'
@@ -170,12 +170,32 @@ jobs:
           # Smoke-check that the deployed binary can start without the SDK.
           env -u LD_LIBRARY_PATH -u QT_PLUGIN_PATH -u QML2_IMPORT_PATH -u QML_IMPORT_PATH \
             QT_QPA_PLATFORM=offscreen "$bundle/clipdeck" --version
+          cp "artifacts/${ARTIFACT}-benchmark.txt" "$bundle/benchmark.txt"
           tar -C dist -czf "artifacts/${ARTIFACT}.tar.gz" ClipDeck
 
-      - name: Upload application and benchmark
-        uses: actions/upload-artifact@v4
+      - name: Upload Windows application directory
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ env.ARTIFACT }}
           path: ClipboardManager/artifacts/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload macOS archive directly
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v7
+        with:
+          path: ClipboardManager/artifacts/${{ env.ARTIFACT }}.zip
+          archive: false
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload Linux archive directly
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v7
+        with:
+          path: ClipboardManager/artifacts/${{ env.ARTIFACT }}.tar.gz
+          archive: false
           if-no-files-found: error
           retention-days: 14
