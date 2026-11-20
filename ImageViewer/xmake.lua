@@ -19,20 +19,31 @@ package("imageviewer-libheif")
     add_versions("1.23.4", "d0c02b4b0e978f34a1974b6f3eea7975a537bf7a9195ffeea38e7242ff316fdd")
     add_deps("cmake")
     add_deps("libde265 1.1.1", {configs = {shared = false, tools = false}})
-    add_deps("dav1d 1.5.0", {configs = {shared = false, tools = false}})
     add_links("heif")
-    on_load("windows", function (package)
-        package:add("defines", "LIBHEIF_STATIC_BUILD")
+    on_load(function (package)
+        if package:is_plat("windows") then
+            package:add("defines", "LIBHEIF_STATIC_BUILD")
+        end
+        -- The dav1d Meson toolchain pulls an Xmake-built Python on macOS.
+        -- Use the real AOM package (CMake), not the nonexistent aom_decoder
+        -- package from the upstream libheif recipe, on Apple silicon.
+        if package:is_plat("macosx") then
+            package:add("deps", "aom 3.13.1", {configs = {shared = false, tools = false}})
+        else
+            package:add("deps", "dav1d 1.5.0", {configs = {shared = false, tools = false}})
+        end
     end)
     on_install("windows", "linux", "macosx", function (package)
+        local use_aom = package:is_plat("macosx")
         local configs = {
             "-DBUILD_SHARED_LIBS=OFF",
             "-DENABLE_PLUGIN_LOADING=OFF",
             "-DWITH_LIBDE265=ON",
             "-DWITH_LIBDE265_PLUGIN=OFF",
-            "-DWITH_DAV1D=ON",
+            "-DWITH_DAV1D=" .. (use_aom and "OFF" or "ON"),
             "-DWITH_DAV1D_PLUGIN=OFF",
-            "-DWITH_AOM_DECODER=OFF",
+            "-DWITH_AOM_DECODER=" .. (use_aom and "ON" or "OFF"),
+            "-DWITH_AOM_DECODER_PLUGIN=OFF",
             "-DWITH_AOM_ENCODER=OFF",
             "-DWITH_X265=OFF",
             "-DWITH_RAV1E=OFF",

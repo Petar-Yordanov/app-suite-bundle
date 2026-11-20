@@ -65,6 +65,7 @@ jobs:
           host: ${{ matrix.qt_host }}
           target: desktop
           arch: ${{ matrix.qt_arch }}
+          modules: qtimageformats
           cache: true
 
       - name: Configure, build and test (Windows MSVC)

@@ -43,10 +43,17 @@ int main(int argc,char** argv){
     try{
         QTemporaryDir temp;require(temp.isValid(),"temporary directory");auto file=[&](const QString& name){return temp.filePath(name);};
         QImage fixture(160,80,QImage::Format_RGB32);fixture.fill(Qt::red);
-        for(auto* ext:{"png","jpg","bmp","tiff","webp"}){
-            auto path=file(QString("sample.")+ext);require(fixture.save(path),"required Qt image encoder unavailable");
-            auto result=imageview::decode(path);require(!result.image.isNull()&&result.original==fixture.size(),"required Qt image decoder unavailable");
+        for(auto* ext:{"png","jpg","bmp"}){
+            const QString format=QString::fromLatin1(ext);
+            auto path=file(QString("sample.")+format);require(fixture.save(path),qPrintable(QString("Cannot write %1 test fixture").arg(format)));
+            auto result=imageview::decode(path);require(!result.image.isNull()&&result.original==fixture.size(),qPrintable(QString("Cannot decode %1: %2").arg(format,result.error)));
         }
+        // Test read support independently of the SDK's optional write codecs.
+        // The following fixed fixtures are genuine 4x3 RGB TIFF and WebP images.
+        write(file("sample.tiff"),QByteArray::fromBase64("SUkqAAgAAAAKAAABBAABAAAABAAAAAEBBAABAAAAAwAAAAIBAwADAAAAhgAAAAMBAwABAAAAAQAAAAYBAwABAAAAAgAAABEBBAABAAAAjAAAABUBAwABAAAAAwAAABYBBAABAAAAAwAAABcBBAABAAAAJAAAABwBAwABAAAAAQAAAAAAAAAIAAgACAD/AAD/AAD/AAD/AAD/AAD/AAD/AAD/AAD/AAD/AAD/AAD/AAA="));
+        auto tiff=imageview::decode(file("sample.tiff"));require(!tiff.image.isNull()&&tiff.original==QSize(4,3),qPrintable(QString("TIFF decoder unavailable (install Qt Image Formats): %1").arg(tiff.error)));
+        write(file("sample.webp"),QByteArray::fromBase64("UklGRjwAAABXRUJQVlA4IDAAAADQAQCdASoEAAMAAUAmJaACdLoB+AADsAD+8ut//NgVzXPv9//S4P0uD9Lg/9KQAAA="));
+        auto webpStill=imageview::decode(file("sample.webp"));require(!webpStill.image.isNull()&&webpStill.original==QSize(4,3),qPrintable(QString("WebP decoder unavailable (install Qt Image Formats): %1").arg(webpStill.error)));
         write(file("vector.svg"),"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"160\" height=\"80\"><rect width=\"160\" height=\"80\" fill=\"red\"/></svg>");
         require(imageview::decode(file("vector.svg")).original==fixture.size(),"SVG dimensions");
         write(file("a.gif"),QByteArray::fromBase64("R0lGODlhAwACAIEAAP8AAAAAAAAAAAAAACH/C05FVFNDQVBFMi4wAwEAAAAh+QQACgAAACwAAAAAAwACAAAIBgABCBwYEAAh+QQBCgABACwAAAAAAwACAIEAAP8AAAAAAAAAAAAIBgABCBwYEAA7"));
