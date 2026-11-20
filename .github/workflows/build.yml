@@ -13,9 +13,6 @@ jobs:
     name: ${{ matrix.os }}-${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 40
-    defaults:
-      run:
-        working-directory: ClipboardManager
     strategy:
       fail-fast: false
       matrix:
@@ -31,6 +28,23 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Locate ClipDeck project
+        id: project
+        shell: bash
+        run: |
+          # The source ZIP already contains a ClipboardManager directory.
+          # Also accept it if it was extracted inside the existing directory.
+          for dir in ClipboardManager ClipboardManager/ClipboardManager; do
+            if [[ -f "$dir/xmake.lua" && -f "$dir/App/Controller.cpp" && -f "$dir/Tests/QtIntegrationTests.cpp" ]] &&
+               grep -Fq 'target("clipdeck")' "$dir/xmake.lua"; then
+              printf 'directory=%s\n' "$dir" >> "$GITHUB_OUTPUT"
+              printf 'Building ClipDeck from %s/xmake.lua\n' "$dir"
+              exit 0
+            fi
+          done
+          echo '::error::ClipDeck project not found. Extract ClipboardManager.zip at the repository root, so ClipboardManager/xmake.lua and ClipboardManager/App/Controller.cpp exist.'
+          exit 1
 
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
@@ -54,10 +68,11 @@ jobs:
 
       - name: Configure, build and test (Windows MSVC)
         if: runner.os == 'Windows'
+        working-directory: ${{ steps.project.outputs.directory }}
         shell: pwsh
         run: |
           $PSNativeCommandUseErrorActionPreference = $true
-          xmake f -y -p windows -a x64 -m release --vs=2022 --desktop=y "--qt=$env:QT_ROOT_DIR"
+          xmake f -c -y -P . -F xmake.lua -p windows -a x64 -m release --vs=2022 "--qt=$env:QT_ROOT_DIR"
           xmake build -y clipdeck
           xmake build -y clipdeck-tests
           xmake build -y clipdeck-integration-tests
@@ -66,9 +81,10 @@ jobs:
 
       - name: Configure and build (Linux/macOS Release)
         if: runner.os != 'Windows'
+        working-directory: ${{ steps.project.outputs.directory }}
         shell: bash
         run: |
-          xmake f -y -p "${{ matrix.xmake_platform }}" -m release -a "${{ matrix.xmake_arch }}" --desktop=y --qt="$QT_ROOT_DIR"
+          xmake f -c -y -P . -F xmake.lua -p "${{ matrix.xmake_platform }}" -m release -a "${{ matrix.xmake_arch }}" --qt="$QT_ROOT_DIR"
           xmake build -y clipdeck
           xmake build -y clipdeck-tests
           xmake build -y clipdeck-integration-tests
@@ -76,11 +92,13 @@ jobs:
 
       - name: Run storage tests
         if: runner.os != 'Windows'
+        working-directory: ${{ steps.project.outputs.directory }}
         shell: bash
         run: xmake run clipdeck-tests
 
       - name: Run native clipboard integration tests (Linux X11)
         if: runner.os == 'Linux'
+        working-directory: ${{ steps.project.outputs.directory }}
         env:
           QT_QPA_PLATFORM: xcb
           QT_QUICK_BACKEND: software
@@ -88,6 +106,7 @@ jobs:
 
       - name: Run native clipboard integration tests (Windows)
         if: runner.os == 'Windows'
+        working-directory: ${{ steps.project.outputs.directory }}
         shell: pwsh
         env:
           QT_QUICK_BACKEND: software
@@ -95,12 +114,14 @@ jobs:
 
       - name: Run native clipboard integration tests (macOS)
         if: runner.os == 'macOS'
+        working-directory: ${{ steps.project.outputs.directory }}
         env:
           QT_QUICK_BACKEND: software
         run: xmake run clipdeck-integration-tests
 
       - name: Run storage benchmark (Windows)
         if: runner.os == 'Windows'
+        working-directory: ${{ steps.project.outputs.directory }}
         shell: pwsh
         run: |
           $PSNativeCommandUseErrorActionPreference = $true
@@ -109,6 +130,7 @@ jobs:
 
       - name: Run storage benchmark (Linux/macOS)
         if: runner.os != 'Windows'
+        working-directory: ${{ steps.project.outputs.directory }}
         shell: bash
         run: |
           mkdir -p artifacts
@@ -116,6 +138,7 @@ jobs:
 
       - name: Build Windows installer (Inno Setup)
         if: runner.os == 'Windows'
+        working-directory: ${{ steps.project.outputs.directory }}
         shell: pwsh
         run: |
           $exe = Get-ChildItem build -Recurse -File -Filter clipdeck.exe | Select-Object -First 1
@@ -183,6 +206,7 @@ jobs:
 
       - name: Build macOS installer (productbuild)
         if: runner.os == 'macOS'
+        working-directory: ${{ steps.project.outputs.directory }}
         shell: bash
         run: |
           mkdir -p dist
@@ -223,6 +247,7 @@ jobs:
 
       - name: Build Linux installer (Debian package)
         if: runner.os == 'Linux'
+        working-directory: ${{ steps.project.outputs.directory }}
         shell: bash
         run: |
           exe="$(find build -type f -name clipdeck -print -quit)"
@@ -282,7 +307,7 @@ jobs:
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v7
         with:
-          path: ClipboardManager/artifacts/${{ env.ARTIFACT }}-setup.exe
+          path: ${{ steps.project.outputs.directory }}/artifacts/${{ env.ARTIFACT }}-setup.exe
           archive: false
           if-no-files-found: error
           retention-days: 14
@@ -291,7 +316,7 @@ jobs:
         if: runner.os == 'macOS'
         uses: actions/upload-artifact@v7
         with:
-          path: ClipboardManager/artifacts/${{ env.ARTIFACT }}.pkg
+          path: ${{ steps.project.outputs.directory }}/artifacts/${{ env.ARTIFACT }}.pkg
           archive: false
           if-no-files-found: error
           retention-days: 14
@@ -300,7 +325,7 @@ jobs:
         if: runner.os == 'Linux'
         uses: actions/upload-artifact@v7
         with:
-          path: ClipboardManager/artifacts/${{ env.ARTIFACT }}.deb
+          path: ${{ steps.project.outputs.directory }}/artifacts/${{ env.ARTIFACT }}.deb
           archive: false
           if-no-files-found: error
           retention-days: 14
