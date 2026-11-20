@@ -1,0 +1,161 @@
+name: Build ClipDeck
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.os }}-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: ClipboardManager
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows, arch: x64,   runner: windows-2022,     xmake_arch: x64,    qt_host: windows,       qt_arch: win64_msvc2022_64 }
+          - { os: windows, arch: arm64, runner: windows-11-arm,   xmake_arch: arm64,  qt_host: windows_arm64, qt_arch: win64_msvc2022_arm64 }
+          - { os: linux,   arch: x64,   runner: ubuntu-24.04,     xmake_arch: x86_64, qt_host: linux,         qt_arch: linux_gcc_64 }
+          - { os: linux,   arch: arm64, runner: ubuntu-24.04-arm, xmake_arch: arm64,  qt_host: linux_arm64,   qt_arch: linux_gcc_arm64 }
+          - { os: macos,   arch: x64,   runner: macos-15-intel,   xmake_arch: x86_64, qt_host: mac,           qt_arch: clang_64 }
+          - { os: macos,   arch: arm64, runner: macos-15,         xmake_arch: arm64,  qt_host: mac,           qt_arch: clang_64 }
+
+    env:
+      QT_VERSION: '6.8.3'
+      ARTIFACT: ClipDeck-${{ matrix.os }}-${{ matrix.arch }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libgl-dev libegl-dev libxcb-cursor0 libxkbcommon-x11-0 patchelf
+
+      - name: Set up Xmake
+        uses: xmake-io/github-action-setup-xmake@v1
+        with:
+          xmake-version: '3.1.1'
+
+      - name: Install Qt SDK
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: ${{ matrix.qt_host }}
+          target: desktop
+          arch: ${{ matrix.qt_arch }}
+          cache: true
+
+      - name: Configure and build (Release)
+        shell: bash
+        run: |
+          xmake f -y -m release -a "${{ matrix.xmake_arch }}" --desktop=y --qt="$QT_ROOT_DIR"
+          xmake build -y clipdeck
+          xmake build -y clipdeck-tests
+          xmake build -y clipdeck-integration-tests
+          xmake build -y clipdeck-bench
+
+      - name: Run storage tests
+        shell: bash
+        run: xmake run clipdeck-tests
+
+      # The offscreen clipboard backend is suitable for this integration
+      # test on Linux. OS-native clipboard/hotkey tests need a desktop session.
+      - name: Run Qt integration tests (Linux)
+        if: runner.os == 'Linux'
+        env:
+          QT_QPA_PLATFORM: offscreen
+          QT_QUICK_BACKEND: software
+        run: xmake run clipdeck-integration-tests
+
+      - name: Run storage benchmark
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          xmake run clipdeck-bench | tee "artifacts/${ARTIFACT}-benchmark.txt"
+
+      - name: Deploy Windows executable and Qt
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem build -Recurse -File -Filter clipdeck.exe | Select-Object -First 1
+          if (!$exe) { throw "clipdeck.exe not found" }
+          $bundle = Join-Path $PWD "dist/ClipDeck"
+          New-Item -ItemType Directory -Force $bundle | Out-Null
+          Copy-Item $exe.FullName (Join-Path $bundle "clipdeck.exe")
+          & "$env:QT_ROOT_DIR/bin/windeployqt.exe" --release --qmldir "$PWD/UI" "$bundle/clipdeck.exe"
+          if ($LASTEXITCODE -ne 0) { throw "windeployqt failed" }
+          Compress-Archive -Path "$bundle/*" -DestinationPath "artifacts/$env:ARTIFACT.zip"
+
+      - name: Deploy macOS application
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          mkdir -p dist
+          bundle="$(find build -type d -iname 'clipdeck.app' -print -quit)"
+          if [[ -n "$bundle" ]]; then
+            ditto "$bundle" dist/ClipDeck.app
+          else
+            exe="$(find build -type f -name clipdeck -print -quit)"
+            test -n "$exe"
+            mkdir -p dist/ClipDeck.app/Contents/MacOS
+            cp "$exe" dist/ClipDeck.app/Contents/MacOS/clipdeck
+            cat > dist/ClipDeck.app/Contents/Info.plist <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+          <key>CFBundleExecutable</key><string>clipdeck</string>
+          <key>CFBundleIdentifier</key><string>org.clipdeck.app</string>
+          <key>CFBundleName</key><string>ClipDeck</string>
+          <key>CFBundlePackageType</key><string>APPL</string>
+          <key>CFBundleShortVersionString</key><string>1.0.0</string>
+          </dict></plist>
+          PLIST
+          fi
+          "$QT_ROOT_DIR/bin/macdeployqt" dist/ClipDeck.app -qmldir="$PWD/UI" -always-overwrite
+          # Ad-hoc signing is sufficient for local testing but is not notarization.
+          codesign --force --deep --sign - dist/ClipDeck.app
+          ditto -c -k --sequesterRsrc --keepParent dist/ClipDeck.app "artifacts/${ARTIFACT}.zip"
+
+      - name: Deploy Linux executable and Qt
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          exe="$(find build -type f -name clipdeck -print -quit)"
+          test -n "$exe"
+          bundle="$PWD/dist/ClipDeck"
+          mkdir -p "$bundle/lib"
+          cp "$exe" "$bundle/clipdeck"
+          # Copy shared libraries and runtime modules (not SDK headers or tools).
+          cp -a "$QT_ROOT_DIR"/lib/*.so* "$bundle/lib/"
+          cp -a "$QT_ROOT_DIR/plugins" "$bundle/"
+          cp -a "$QT_ROOT_DIR/qml" "$bundle/"
+          printf '[Paths]\nPrefix = .\nLibraries = lib\nPlugins = plugins\nQmlImports = qml\n' > "$bundle/qt.conf"
+
+          # Relative RPATH also works when autostart invokes the executable directly.
+          patchelf --set-rpath '$ORIGIN/lib' "$bundle/clipdeck"
+          while IFS= read -r -d '' lib; do
+            relative="$(realpath --relative-to="$(dirname "$lib")" "$bundle/lib")"
+            patchelf --set-rpath "\$ORIGIN/$relative" "$lib"
+          done < <(find "$bundle/lib" "$bundle/plugins" "$bundle/qml" -type f -name '*.so*' -print0)
+
+          # Smoke-check that the deployed binary can start without the SDK.
+          env -u LD_LIBRARY_PATH -u QT_PLUGIN_PATH -u QML2_IMPORT_PATH -u QML_IMPORT_PATH \
+            QT_QPA_PLATFORM=offscreen "$bundle/clipdeck" --version
+          tar -C dist -czf "artifacts/${ARTIFACT}.tar.gz" ClipDeck
+
+      - name: Upload application and benchmark
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT }}
+          path: ClipboardManager/artifacts/
+          if-no-files-found: error
+          retention-days: 14
