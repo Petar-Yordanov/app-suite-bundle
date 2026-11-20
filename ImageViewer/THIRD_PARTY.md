@@ -1,0 +1,5 @@
+# Third-party dependencies
+
+The source project links against Qt 6 (including Qt Image Formats), libheif, libde265, AOM, LibRaw and stb image. Xmake resolves their source packages and transitive dependencies; see `xmake.lua`. The project does not contain vendored decoder code. The original libraries' respective licenses apply (Qt open-source license options, libheif LGPL, libde265 LGPL, AOM BSD, LibRaw LGPL/CDDL, stb MIT/public domain). For redistributed binaries, provide applicable license notices and corresponding source/relinking material as required by the exact versions and the chosen Qt/codec license options; the development installer scripts are not a complete licensing-compliance release process. Review the dependencies' source packages before public redistribution. HEVC patents may also require separate review for commercial distribution.
+
+References: https://doc.qt.io/qt-6/qtimageformats-index.html, https://github.com/strukturag/libheif, https://www.libraw.org/, https://github.com/nothings/stb, https://github.com/strukturag/libde265, https://aomedia.googlesource.com/aom/.

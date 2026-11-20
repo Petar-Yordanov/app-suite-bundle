@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Image Viewer
+Comment=Lightweight image viewer
+Exec=/opt/imageviewer/imageviewer %f
+Icon=image-x-generic
+Terminal=false
+Categories=Graphics;Viewer;
+MimeType=image/jpeg;image/png;image/bmp;image/tiff;image/gif;image/webp;image/avif;image/heic;image/heif;image/svg+xml;image/vnd.adobe.photoshop;image/x-psd;image/x-icon;image/x-tga;image/x-portable-bitmap;image/x-portable-graymap;image/x-portable-pixmap;image/x-canon-cr2;image/x-canon-cr3;image/x-nikon-nef;image/x-sony-arw;image/x-adobe-dng;image/x-fuji-raf;image/x-panasonic-rw2;image/x-olympus-orf;image/x-pentax-pef;image/x-samsung-srw;image/x-dcraw;

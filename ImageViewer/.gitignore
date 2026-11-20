@@ -1,0 +1,7 @@
+/.xmake/
+/build/
+/dist/
+/artifacts/
+/ImageViewerData/
+/imageviewer-installer.iss
+/Benchmarks/__pycache__/
