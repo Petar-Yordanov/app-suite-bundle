@@ -3,6 +3,7 @@ set_version("1.0.0")
 set_languages("cxx20")
 add_rules("mode.debug", "mode.release")
 set_warnings("all")
+add_cxxflags("/utf-8")
 if is_plat("windows") then
     set_runtimes("MD")
 end
