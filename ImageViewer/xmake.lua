@@ -7,8 +7,51 @@ if is_plat("windows") then
     set_runtimes("MD")
 end
 
--- Only decoding libraries; no encoders, Qt WebEngine, or network service.
-add_requires("libheif 1.23.4", {system = false, configs = {shared = false, libde265 = true, aom_decoder = true}})
+-- Project-local recipe: upstream xmake-repo treats the aom_decoder option
+-- as a package name, which does not exist. Build both actual decoder
+-- dependencies directly and disable runtime plugin loading so the deployed
+-- executable does not need codecs from the CI machine's package cache.
+package("imageviewer-libheif")
+    set_homepage("https://github.com/strukturag/libheif")
+    set_description("libheif with built-in HEVC and AV1 decoders")
+    set_license("LGPL-3.0")
+    add_urls("https://github.com/strukturag/libheif/releases/download/v$(version)/libheif-$(version).tar.gz")
+    add_versions("1.23.4", "d0c02b4b0e978f34a1974b6f3eea7975a537bf7a9195ffeea38e7242ff316fdd")
+    add_deps("cmake")
+    add_deps("libde265 1.1.1", {configs = {shared = false, tools = false}})
+    add_deps("dav1d 1.5.0", {configs = {shared = false, tools = false}})
+    add_links("heif")
+    on_load("windows", function (package)
+        package:add("defines", "LIBHEIF_STATIC_BUILD")
+    end)
+    on_install("windows", "linux", "macosx", function (package)
+        local configs = {
+            "-DBUILD_SHARED_LIBS=OFF",
+            "-DENABLE_PLUGIN_LOADING=OFF",
+            "-DWITH_LIBDE265=ON",
+            "-DWITH_LIBDE265_PLUGIN=OFF",
+            "-DWITH_DAV1D=ON",
+            "-DWITH_DAV1D_PLUGIN=OFF",
+            "-DWITH_AOM_DECODER=OFF",
+            "-DWITH_AOM_ENCODER=OFF",
+            "-DWITH_X265=OFF",
+            "-DWITH_RAV1E=OFF",
+            "-DWITH_LIBSHARPYUV=OFF",
+            "-DWITH_HEADER_COMPRESSION=OFF",
+            "-DWITH_UNCOMPRESSED_CODEC=OFF",
+            "-DWITH_GDK_PIXBUF=OFF",
+            "-DWITH_EXAMPLES=OFF",
+            "-DBUILD_TESTING=OFF",
+            "-DBUILD_DOCUMENTATION=OFF"
+        }
+        import("package.tools.cmake").install(package, configs)
+    end)
+    on_test(function (package)
+        assert(package:has_cfuncs("heif_have_decoder_for_format", {includes = "libheif/heif.h"}))
+    end)
+package_end()
+
+add_requires("imageviewer-libheif 1.23.4", {system = false, configs = {shared = false}})
 add_requires("libraw 0.22.2", {system = false, configs = {shared = false}})
 add_requires("stb 2026.03.18", {system = false})
 
@@ -17,7 +60,7 @@ target("imageviewer")
     add_files("Core/*.cpp", "App/*.cpp", "UI/resources.qrc")
     add_files("App/Controller.hpp", "App/Updater.hpp")
     add_frameworks("QtCore", "QtGui", "QtWidgets", "QtQml", "QtQuick", "QtQuickControls2", "QtNetwork", "QtSvg")
-    add_packages("libheif", "libraw", "stb")
+    add_packages("imageviewer-libheif", "libraw", "stb")
 target_end()
 
 target("imageviewer-tests")
@@ -26,7 +69,7 @@ target("imageviewer-tests")
     add_files("Core/*.cpp", "App/Controller.cpp", "App/Updater.cpp", "Tests/IntegrationTests.cpp", "UI/resources.qrc")
     add_files("App/Controller.hpp", "App/Updater.hpp")
     add_frameworks("QtCore", "QtGui", "QtWidgets", "QtQml", "QtQuick", "QtQuickControls2", "QtNetwork", "QtSvg")
-    add_packages("libheif", "libraw", "stb")
+    add_packages("imageviewer-libheif", "libraw", "stb")
 target_end()
 
 target("imageviewer-metadata-tests")
@@ -40,5 +83,5 @@ target("imageviewer-bench")
     set_default(false)
     add_files("Core/*.cpp", "Benchmarks/DecodeBench.cpp")
     add_frameworks("QtCore", "QtGui", "QtSvg")
-    add_packages("libheif", "libraw", "stb")
+    add_packages("imageviewer-libheif", "libraw", "stb")
 target_end()
