@@ -23,8 +23,8 @@ ApplicationWindow {
     palette.alternateBase: panelColor
     palette.button: panelColor
     palette.text: dark ? "#e3e8ef" : "#232831"
-    palette.buttonText: palette.text
-    palette.windowText: palette.text
+    palette.buttonText: dark ? "#e3e8ef" : "#232831"
+    palette.windowText: dark ? "#e3e8ef" : "#232831"
     palette.highlight: dark ? "#345c96" : "#c6dcff"
     palette.highlightedText: dark ? "#ffffff" : "#152b4c"
     function newTab() {controller.newTab("")}

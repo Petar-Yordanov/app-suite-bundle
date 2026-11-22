@@ -35,7 +35,7 @@ WebEngineView {
         }
     }
     Timer { id: sameDocumentTimer; interval: 150; onTriggered: if (!page.loading && !page.errorText) page.tab.sameDocument(page.url,page.title) }
-    onCurrentChanged: if (current) lifecycleState = WebEngineView.Active
+    onCurrentChanged: if (current) lifecycleState = WebEngineView.LifecycleState.Active
     Timer {
         interval: 30000
         repeat: true

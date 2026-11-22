@@ -18,7 +18,30 @@ mkdir -p dist/deploy-qml
 cp UI/Main.qml UI/DesktopPage.qml dist/deploy-qml/
 mkdir -p dist/WebBrowser.app/Contents/Resources
 cp README.md THIRD_PARTY.md COMPATIBILITY.md REQUIREMENTS.md dist/WebBrowser.app/Contents/Resources/
-"$QT_ROOT_DIR/bin/macdeployqt" dist/WebBrowser.app -qmldir="$PWD/dist/deploy-qml" -libpath="$QT_ROOT_DIR/lib" -always-overwrite -codesign=-
+deploy_qt() (
+  # macdeployqt scans SQL plugins in the SDK even when the app only uses
+  # SQLite. On the disposable CI runner, exclude optional server drivers
+  # before dependency scanning; restore the SDK before it is cached.
+  if [[ "${GITHUB_ACTIONS:-false}" == true ]]; then
+    sql_dir="$QT_ROOT_DIR/plugins/sqldrivers"
+    parked="$(mktemp -d "$QT_ROOT_DIR/.webbrowser-sql.XXXXXX")"
+    restore_drivers() {
+      local driver
+      for driver in "$parked"/*.dylib; do
+        [[ ! -e "$driver" ]] || mv "$driver" "$sql_dir/"
+      done
+      rmdir "$parked"
+    }
+    trap restore_drivers EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    for driver in libqsqlodbc.dylib libqsqlpsql.dylib libqsqlmimer.dylib; do
+      [[ ! -f "$sql_dir/$driver" ]] || mv "$sql_dir/$driver" "$parked/"
+    done
+  fi
+  "$QT_ROOT_DIR/bin/macdeployqt" dist/WebBrowser.app -qmldir="$PWD/dist/deploy-qml" -libpath="$QT_ROOT_DIR/lib" -always-overwrite -codesign=-
+)
+deploy_qt
 # Browser storage uses SQLite only; don't ship unavailable external drivers.
 rm -f dist/WebBrowser.app/Contents/PlugIns/sqldrivers/libqsqlodbc.dylib \
       dist/WebBrowser.app/Contents/PlugIns/sqldrivers/libqsqlpsql.dylib \
@@ -43,7 +66,24 @@ codesign --verify --deep --strict dist/WebBrowser.app
 env -u QT_PLUGIN_PATH -u QML2_IMPORT_PATH -u QML_IMPORT_PATH dist/WebBrowser.app/Contents/MacOS/webbrowser --smoke-test
 compat_args=(--compatibility-smoke)
 if [[ "${WEBBROWSER_REQUIRE_CODECS:-0}" == 1 ]]; then compat_args+=(--require-codecs); fi
-env -u QT_PLUGIN_PATH -u QML2_IMPORT_PATH -u QML_IMPORT_PATH dist/WebBrowser.app/Contents/MacOS/webbrowser "${compat_args[@]}"
+# Hosted macOS runners can fail to resolve Chromium's mDNS ICE candidates.
+# Permit loopback and use direct host candidates ONLY in the synthetic CI
+# peer-to-peer test. Normal launches and local manual diagnostics retain
+# Chromium's default WebRTC privacy protections.
+if [[ "${GITHUB_ACTIONS:-false}" == true ]]; then
+  compat_flags="${QTWEBENGINE_CHROMIUM_FLAGS:-}"
+  if [[ "$compat_flags" =~ --disable-features=([^[:space:]]+) ]]; then
+    disabled="${BASH_REMATCH[0]}"
+    compat_flags="${compat_flags/"$disabled"/"$disabled,WebRtcHideLocalIpsWithMdns"}"
+  else
+    compat_flags="$compat_flags --disable-features=WebRtcHideLocalIpsWithMdns"
+  fi
+  env -u QT_PLUGIN_PATH -u QML2_IMPORT_PATH -u QML_IMPORT_PATH \
+    QTWEBENGINE_CHROMIUM_FLAGS="$compat_flags --allow-loopback-in-peer-connection" \
+    dist/WebBrowser.app/Contents/MacOS/webbrowser "${compat_args[@]}"
+else
+  env -u QT_PLUGIN_PATH -u QML2_IMPORT_PATH -u QML_IMPORT_PATH dist/WebBrowser.app/Contents/MacOS/webbrowser "${compat_args[@]}"
+fi
 productbuild --component dist/WebBrowser.app /Applications artifacts/WebBrowser-macos-arm64.pkg
 if [[ "${PORTABLE:-0}" == 1 ]]; then
   ditto -c -k --sequesterRsrc --keepParent dist/WebBrowser.app artifacts/WebBrowser-macos-arm64-portable.zip
