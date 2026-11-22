@@ -43,9 +43,9 @@ QString ffmpegPath(){
     auto packaged=dir.filePath("ffmpeg");
 #endif
     if(QFileInfo(packaged).isExecutable())return packaged;
+#ifdef Q_OS_WIN
     const auto explicitPath=qEnvironmentVariable("FFMPEG_BINARY");
     if(QFileInfo(explicitPath).isExecutable()&&QFileInfo(explicitPath).size()>1024*1024)return explicitPath;
-#ifdef Q_OS_WIN
     const auto chocolatey=qEnvironmentVariable("ChocolateyInstall");
     if(!chocolatey.isEmpty()){
         QDirIterator it(QDir(chocolatey).filePath("lib/ffmpeg/tools"),{"ffmpeg.exe"},QDir::Files,QDirIterator::Subdirectories);
@@ -65,7 +65,7 @@ Devices discoverDevices(const QString& ffmpeg){
     const auto output=QString::fromUtf8(query(ffmpeg,{"-hide_banner","-list_devices","true","-f","dshow","-i","dummy"}));
     QRegularExpression re(R"re("([^"]+)"\s*\(audio\))re");
     auto matches=re.globalMatch(output);
-    while(matches.hasNext()){auto match=matches.next();result.microphones.append({match.captured(1),match.captured(1)});}
+    while(matches.hasNext()){auto match=matches.next();result.microphones.append(AudioDevice{match.captured(1),match.captured(1)});}
     result.systemSource="WASAPI default playback device";
 #elif defined(Q_OS_MACOS)
     const auto output=QString::fromUtf8(query(ffmpeg,{"-hide_banner","-f","avfoundation","-list_devices","true","-i",""}));
@@ -75,7 +75,7 @@ Devices discoverDevices(const QString& ffmpeg){
         if(line.contains("AVFoundation audio devices")){audio=true;continue;}
         if(!audio)continue;
         auto match=re.match(line);
-        if(match.hasMatch())result.microphones.append({match.captured(1),match.captured(2).trimmed()});
+        if(match.hasMatch())result.microphones.append(AudioDevice{match.captured(1),match.captured(2).trimmed()});
     }
     result.systemSource="ScreenCaptureKit";
 #else
@@ -85,12 +85,12 @@ Devices discoverDevices(const QString& ffmpeg){
         for(const auto& line:output.split('\n')){
             auto fields=line.split('\t');
             if(fields.size()<2||fields[1].endsWith(".monitor"))continue;
-            if(fields[0].toInt()>0||fields[0]=="0")result.microphones.append({fields[1],fields[1]});
+            if(fields[0].toInt()>0||fields[0]=="0")result.microphones.append(AudioDevice{fields[1],fields[1]});
         }
         const auto sink=QString::fromUtf8(query(pactl,{"get-default-sink"})).trimmed();
         if(!sink.isEmpty()&&!sink.contains('\n')&&!sink.contains(' '))result.systemSource=sink+".monitor";
     }
-    if(result.microphones.isEmpty())result.microphones.append({"default","Default PulseAudio microphone"});
+    if(result.microphones.isEmpty())result.microphones.append(AudioDevice{"default","Default PulseAudio microphone"});
 #endif
     return result;
 }
@@ -98,17 +98,17 @@ QList<Encoder> encoders(bool hardware){
     QList<Encoder> result;
     if(hardware){
 #ifdef Q_OS_MACOS
-        result.append({"h264_videotoolbox",{}});
+        result.append(Encoder{"h264_videotoolbox",{}});
 #elif defined(Q_OS_WIN)
-        for(const auto* name:{"h264_nvenc","h264_qsv","h264_amf","h264_mf"})result.append({name,{}});
+        for(const auto* name:{"h264_nvenc","h264_qsv","h264_amf","h264_mf"})result.append(Encoder{name,{}});
 #else
-        result.append({"h264_nvenc",{}});
+        result.append(Encoder{"h264_nvenc",{}});
         for(const auto& device:QDir("/dev/dri").entryList({"renderD*"},QDir::System|QDir::Files))
-            result.append({"h264_vaapi","/dev/dri/"+device});
-        result.append({"h264_qsv",{}});
+            result.append(Encoder{"h264_vaapi","/dev/dri/"+device});
+        result.append(Encoder{"h264_qsv",{}});
 #endif
     }
-    result.append({"libx264",{}});
+    result.append(Encoder{"libx264",{}});
     return result;
 }
 QStringList encoderArgs(const Encoder& e,const Config& cfg,Size out,bool directDxgi){

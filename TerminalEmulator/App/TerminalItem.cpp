@@ -176,7 +176,7 @@ void TerminalItem::keyPressEvent(QKeyEvent* e){
     case Qt::Key_Insert:v=VTERM_KEY_INS;break;case Qt::Key_Delete:v=VTERM_KEY_DEL;break;
     case Qt::Key_Home:v=VTERM_KEY_HOME;break;case Qt::Key_End:v=VTERM_KEY_END;break;
     case Qt::Key_PageUp:v=VTERM_KEY_PAGEUP;break;case Qt::Key_PageDown:v=VTERM_KEY_PAGEDOWN;break;
-    default:if(key>=Qt::Key_F1&&key<=Qt::Key_F35)v=VTERM_KEY_FUNCTION(key-Qt::Key_F1+1);break;
+    default:if(key>=Qt::Key_F1&&key<=Qt::Key_F35)v=static_cast<VTermKey>(VTERM_KEY_FUNCTION(key-Qt::Key_F1+1));break;
     }
     clearSelection();
     if(v!=VTERM_KEY_NONE){session_->key(v,m);e->accept();return;}

@@ -1,34 +1,8 @@
 set_project("WebBrowser")
 local app_version = os.getenv("APP_VERSION") or "1.0.0"
-assert(app_version:match("^%d+%.%d+%.%d+$"), "APP_VERSION must be major.minor.patch")
 set_version(app_version)
 set_languages("cxx20")
 add_rules("mode.debug", "mode.release")
--- WebEngine requires Qt >= 6.11 (the standard Xmake Qt package recipes
--- currently do not offer that SDK). Honor explicit CI/local paths first.
--- Also discover the normal Qt installer and the developer bootstrap cache.
-local configured_qt = get_config("qt")
-if not configured_qt or configured_qt == "" or configured_qt == "auto" then
-    local explicit = os.getenv("QT_ROOT_DIR")
-    if explicit and #explicit > 0 then
-        set_config("qt", explicit)
-    elseif not is_plat("iphoneos") then
-        local user = os.getenv("USERPROFILE") or os.getenv("HOME") or ""
-        local kits = is_plat("windows") and {"msvc2022_64"} or (is_plat("macosx") and {"macos", "clang_64"} or {"gcc_64", "linux_gcc_64"})
-        local selected = false
-        for _, root in ipairs({path.join(user, ".appsuite", "Qt"), path.join(user, "Qt"), "C:/Qt", "/opt/Qt"}) do
-            for _, kit in ipairs(kits) do
-                local candidate = path.join(root, "6.11.3", kit)
-                if os.isdir(path.join(candidate, "lib", "cmake", "Qt6WebEngineQuick")) then
-                    set_config("qt", candidate)
-                    selected = true
-                    break
-                end
-            end
-            if selected then break end
-        end
-    end
-end
 set_warnings("all")
 if is_plat("windows") then
     set_runtimes("MD")
@@ -37,7 +11,14 @@ if is_plat("windows") then
 end
 target("webbrowser")
     add_rules("qt.quickapp")
-    add_defines('BROWSER_VERSION="' .. app_version .. '"')
+    on_load(function(target)
+        -- Validation must run in Xmake's script scope, not description scope.
+        local version = os.getenv("APP_VERSION") or "1.0.0"
+        if not version:match("^%d+%.%d+%.%d+$") then
+            raise("APP_VERSION must be major.minor.patch")
+        end
+        target:add("defines", 'BROWSER_VERSION="' .. version .. '"')
+    end)
     add_files("Core/*.cpp", "App/*.cpp", "App/*.hpp")
     add_frameworks("QtCore", "QtGui", "QtQml", "QtQuick", "QtQuickControls2", "QtNetwork", "QtSql")
     if is_plat("iphoneos") then
@@ -69,6 +50,7 @@ target_end()
 -- Use Qt's supported static-QML plugin linker and Xcode project generation
 -- for the iOS application bundle. Xmake remains the entry point.
 task("ios-bundle")
+    set_category("plugin")
     on_run(function()
         import("core.base.option")
         local qt = option.get("qt") or os.getenv("QT_ROOT_DIR")
@@ -82,7 +64,7 @@ task("ios-bundle")
         os.vrunv("cmake", {"--build",output,"--config","Release"})
     end)
     set_menu {usage = "xmake ios-bundle [options]", description = "Build native iOS bundle via Qt's static QML linker", options = {
-        {'q',"qt","kv",nil,"Qt iOS SDK directory"},
+        {nil,"qt","kv",nil,"Qt iOS SDK directory"},
         {'d',"device","k",nil,"Build unsigned device bundle instead of simulator"}
     }}
 task_end()

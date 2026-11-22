@@ -3,19 +3,6 @@ set_version("0.9.0")
 set_languages("c++20")
 add_rules("mode.debug", "mode.release")
 
--- Explicit SDK (CI or local override) wins; otherwise use Xmake's Qt packages.
--- Do not mix the SDK provided by CI with a second Qt package installation.
-local configured_qt = get_config("qt")
-local explicit_sdk = configured_qt and configured_qt ~= "" and configured_qt ~= "auto"
-local env_sdk = os.getenv("QT_ROOT_DIR")
-if not explicit_sdk and env_sdk and #env_sdk > 0 then
-    set_config("qt", env_sdk)
-end
-local use_qt_packages = not explicit_sdk and not (env_sdk and #env_sdk > 0)
-if use_qt_packages then
-    add_requires("qt6quick", "qt6widgets")
-end
-
 -- Windows SDK headers may otherwise define min/max macros and break std::min.
 if is_plat("windows") then
     add_defines("NOMINMAX")
@@ -34,11 +21,14 @@ target("ArchiveCore")
     add_headerfiles("src/core/archive_engine.hpp")
     add_includedirs("src/core", {public = true})
     add_packages("libarchive", "libzip", {public = true})
+    -- Static libarchive's XAR reader/writer uses the Windows XmlLite API.
+    if is_plat("windows") then
+        add_syslinks("xmllite", {public = true})
+    end
 
 target("Arky")
     add_rules("qt.quickapp")
     add_deps("ArchiveCore")
-    if use_qt_packages then add_packages("qt6quick", "qt6widgets") end
     add_frameworks("QtCore", "QtGui", "QtQml", "QtQuick", "QtQuickControls2", "QtNetwork")
     add_files("src/app/*.cpp")
     -- Q_OBJECT headers must be passed through moc explicitly.
@@ -57,14 +47,11 @@ target("Arky")
 
 target("archive_tests")
     set_kind("binary")
-    set_default(false)
     add_deps("ArchiveCore")
     add_files("tests/archive_engine_tests.cpp")
 
 target("mime_tests")
     add_rules("qt.console")
-    set_default(false)
-    if use_qt_packages then add_packages("qt6quick", "qt6widgets") end
     add_frameworks("QtCore", "QtGui")
     add_deps("ArchiveCore")
     add_files("tests/mime_bridge_tests.cpp", "src/app/archive_model.cpp", "src/app/mime_bridge.cpp", "src/app/export_store.cpp", "src/app/windows_virtual_mime.cpp")
@@ -78,7 +65,6 @@ target("mime_tests")
 
 target("transfer_plan_tests")
     set_kind("binary")
-    set_default(false)
     add_files("tests/transfer_plan_tests.cpp")
     add_includedirs("src/core")
 

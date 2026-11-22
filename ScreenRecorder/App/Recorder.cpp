@@ -212,7 +212,7 @@ void Recorder::finished(int code,QProcess::ExitStatus exit){
             QTimer::singleShot(0,this,&Recorder::segment);return;
         }
         if(!usable&&state_==State::Preparing&&parts_.isEmpty()&&encoder_.name!="libx264"){
-            candidates_.clear();candidates_.append({"libx264",{}});
+            candidates_.clear();candidates_.append(rec::Encoder{"libx264",{}});
             QTimer::singleShot(0,this,&Recorder::probe);return;
         }
         if(!ok&&endNote_.isEmpty())endNote_="Capture ended: "+errorTail(stderr_);

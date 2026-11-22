@@ -167,9 +167,16 @@ int main(int argc, char** argv) {
 #endif
         ArchiveModel model;
         model.resetEntries(entries);
-        ensure(model.count() == 1, "entry model count");
-        model.toggle(0);
-        ensure(model.selectedCount() == 1 && model.selectedPaths().size() == 1, "entry selection");
+        ensure(model.count() == 2, "entry model must include the implicit parent folder");
+        ensure(model.entryAt(0)->path == "folder" && model.entryAt(0)->type == arky::EntryType::Directory,
+               "implicit parent folder missing");
+        ensure(model.entryAt(1)->path == "folder/readme.txt" && model.entryAt(1)->type == arky::EntryType::Regular,
+               "file entry missing");
+        model.toggle(1);
+        ensure(model.selectedCount() == 1 && model.selectedPaths() == QStringList{QStringLiteral("folder/readme.txt")},
+               "entry selection");
+        model.toggle(1);
+        ensure(model.selectedCount() == 0 && model.selectedPaths().isEmpty(), "entry deselection");
         std::cout << "PASS custom MIME, JSON, plain/HTML, disk-backed uri-list and selection\n";
         return 0;
     } catch (const std::exception& e) {
