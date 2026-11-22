@@ -32,8 +32,11 @@ bool Store::webUrl(const QUrl& u){return u.isValid()&&(u.scheme()=="https"||u.sc
 QUrl Store::address(QString input,QString search){
     input=input.trimmed();if(input.isEmpty())return QUrl("about:blank");
     if(input=="about:blank")return QUrl(input);
+    // An HTTP origin without a path is the root document. Keep a canonical
+    // slash for address-bar navigation, like the browser engine itself.
+    auto canonical=[](QUrl url){if(url.path().isEmpty())url.setPath("/");return url;};
     auto candidate=QUrl(input,QUrl::StrictMode);
-    if(webUrl(candidate))return candidate;
+    if(webUrl(candidate))return canonical(candidate);
     // Only HTTP(S), local loopback and explicit blank; no arbitrary custom schemes.
     static const QRegularExpression explicitScheme("^[A-Za-z][A-Za-z0-9+.-]*:");
     static const QRegularExpression hostPort("^(?:localhost|[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)+):[0-9]+(?:[/?#]|$)",QRegularExpression::CaseInsensitiveOption);
@@ -42,7 +45,7 @@ QUrl Store::address(QString input,QString search){
        (input.contains('.')||input.startsWith("localhost")||input.startsWith('['))){
         bool local=input.startsWith("localhost")||input.startsWith("127.")||input.startsWith("[::1]");
         candidate=QUrl((local?"http://":"https://")+input,QUrl::StrictMode);
-        if(webUrl(candidate))return candidate;
+        if(webUrl(candidate))return canonical(candidate);
     }
     if(!search.contains("%s")||!webUrl(QUrl(QString(search).replace("%s","test"))))search="https://www.google.com/search?q=%s";
     candidate=QUrl(search.replace("%s",QString::fromLatin1(QUrl::toPercentEncoding(input))));return webUrl(candidate)?candidate:QUrl{};

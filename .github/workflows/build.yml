@@ -1308,7 +1308,30 @@ jobs:
       - uses: xmake-io/github-action-setup-xmake@v1
         with:
           xmake-version: '3.1.1'
+      - name: Set up Python for Windows Qt installer
+        if: runner.os == 'Windows'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Qt WebEngine (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          # Install the upstream Qt 6.11 archive-layout fix directly; the
+          # composite installer was still executing the old PyPI release.
+          python -m pip install --upgrade --force-reinstall --no-cache-dir 'git+https://github.com/miurahr/aqtinstall.git@076e1659807d0b362a3ed684d54c2e9c775eb9c7'
+          python -m aqt version
+          $qtParent = Join-Path $env:RUNNER_WORKSPACE 'Qt'
+          python -m aqt install-qt windows desktop $env:QT_VERSION win64_msvc2022_64 --base https://download.qt.io -O $qtParent -m qtwebengine qtwebchannel qtpositioning
+          $qt = Join-Path $qtParent "$env:QT_VERSION/msvc2022_64"
+          if (!(Test-Path "$qt/bin/qmake.exe") -or !(Test-Path "$qt/bin/Qt6WebEngineCore.dll")) { throw "Incomplete Qt WebEngine SDK at $qt" }
+          "QT_ROOT_DIR=$qt" >> $env:GITHUB_ENV
+          "QT_PLUGIN_PATH=$qt/plugins" >> $env:GITHUB_ENV
+          "QML2_IMPORT_PATH=$qt/qml" >> $env:GITHUB_ENV
+          "$qt/bin" >> $env:GITHUB_PATH
       - name: Install Qt WebEngine
+        if: runner.os != 'Windows'
         uses: jurplel/install-qt-action@v4
         with:
           version: ${{ env.QT_VERSION }}
@@ -1316,9 +1339,6 @@ jobs:
           target: desktop
           arch: ${{ matrix.qt_arch }}
           modules: qtwebengine qtwebchannel qtpositioning
-          # Qt 6.11 changed the Windows archive directory layout. Pin the
-          # upstream aqtinstall fix instead of using the default 3.3.0 release.
-          aqtsource: ${{ runner.os == 'Windows' && 'git+https://github.com/miurahr/aqtinstall.git@8c3695d4a4e1ceabf6a74dc6c79681656dc6b74b' || '' }}
           cache-key-prefix: install-qt-action-webbrowser-qt611-v2
           cache: true
       - name: Linux browser dependencies
@@ -1380,9 +1400,15 @@ jobs:
           if-no-files-found: error
 
   browser-ios:
-    name: WebBrowser-iOS-simulator-arm64
+    name: WebBrowser-iOS-${{ matrix.kind }}-${{ matrix.arch }}
     runs-on: macos-15
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { kind: simulator, arch: x86_64, build_dir: ios-simulator }
+          - { kind: device, arch: arm64, build_dir: ios-device }
     steps:
       - uses: actions/checkout@v4
       - uses: xmake-io/github-action-setup-xmake@v1
@@ -1403,16 +1429,21 @@ jobs:
           xc="$(find /Applications -maxdepth 1 -name 'Xcode_26*.app' | sort | tail -1)"
           if [[ -n "$xc" ]]; then sudo xcode-select -s "$xc/Contents/Developer"; fi
           xcodebuild -version
-      - name: Build unsigned simulator app
+      - name: Build unsigned iOS app
         working-directory: WebBrowser
         run: |
-          xmake ios-bundle --qt="$QT_ROOT_DIR"
-          app="$(find build/ios-simulator -type d -name webbrowser.app -print -quit)"
+          if [[ "${{ matrix.kind }}" == device ]]; then
+            xmake ios-bundle --device --qt="$QT_ROOT_DIR"
+          else
+            xmake ios-bundle --qt="$QT_ROOT_DIR"
+          fi
+          app="$(find build/${{ matrix.build_dir }} -type d -name webbrowser.app -print -quit)"
           test -n "$app"
+          lipo -verify_arch "${{ matrix.arch }}" "$app/webbrowser"
           mkdir -p artifacts
-          ditto -c -k --sequesterRsrc --keepParent "$app" artifacts/WebBrowser-ios-simulator-arm64.zip
+          ditto -c -k --sequesterRsrc --keepParent "$app" "artifacts/WebBrowser-ios-${{ matrix.kind }}-${{ matrix.arch }}.zip"
       - uses: actions/upload-artifact@v7
         with:
-          path: WebBrowser/artifacts/WebBrowser-ios-simulator-arm64.zip
+          path: WebBrowser/artifacts/WebBrowser-ios-${{ matrix.kind }}-${{ matrix.arch }}.zip
           archive: false
           if-no-files-found: error

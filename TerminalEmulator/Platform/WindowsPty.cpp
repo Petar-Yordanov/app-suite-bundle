@@ -124,6 +124,10 @@ std::unique_ptr<Pty> Pty::start(const Launch& l,Output out,Exited exit,std::stri
         DeleteProcThreadAttributeList(list);return fail("Could not attach ConPTY attribute");
     }
     STARTUPINFOEXW si{};si.StartupInfo.cb=sizeof(si);si.lpAttributeList=list;
+    // Explicitly request fresh console standard handles. Otherwise Windows
+    // can duplicate redirected parent handles even with inheritance off.
+    // Null hStdInput/hStdOutput/hStdError are populated by ConPTY.
+    si.StartupInfo.dwFlags|=STARTF_USESTDHANDLES;
     PROCESS_INFORMATION process{};
     const auto exe=wide(l.executable),cwd=wide(l.cwd);
     auto cmd=quoteWindows(exe);for(auto& arg:l.arguments)cmd+=L" "+quoteWindows(wide(arg));

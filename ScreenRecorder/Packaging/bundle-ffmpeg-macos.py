@@ -56,13 +56,15 @@ def main():
         resolved[source] = dest
         shutil.copy2(source, dest)
         dest.chmod(0o755)
-        subprocess.run(["codesign", "--remove-signature", str(dest)], capture_output=True)
+        # Keep the existing signature until after relocation. Removing it
+        # first can leave padding in __LINKEDIT that Apple's tool rejects.
+        changes = []
         dylib = dest != executable
         install_id = None
         if dylib:
             ids = output("otool", "-D", str(source)).splitlines()
             install_id = ids[1].strip() if len(ids) > 1 else None
-            subprocess.check_call(["install_name_tool", "-id", "@rpath/" + dest.name, str(dest)])
+            changes += ["-id", "@rpath/" + dest.name]
         for dep in dependencies(source):
             if dep == install_id or dep.startswith(("/usr/lib/", "/System/Library/")):
                 continue
@@ -78,7 +80,13 @@ def main():
                     raise RuntimeError(f"Dylib filename collision: {actual}")
                 queue.append((actual, lib))
             relocated = ("@loader_path/" if dylib else "@loader_path/../Frameworks/ffmpeg/") + lib.name
-            subprocess.check_call(["install_name_tool", "-change", dep, relocated, str(dest)])
+            changes += ["-change", dep, relocated]
+        if changes:
+            subprocess.check_call(["install_name_tool", *changes, str(dest)])
+        # Each copied Mach-O is signed individually, including libraries in
+        # the nested ffmpeg directory, before the containing app is signed.
+        subprocess.check_call(["codesign", "--force", "--sign", "-", str(dest)])
+        subprocess.check_call(["codesign", "--verify", "--strict", str(dest)])
     print(f"Bundled FFmpeg with {len(resolved)-1} non-system dylibs")
 
 

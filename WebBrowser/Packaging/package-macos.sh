@@ -19,6 +19,12 @@ cp UI/Main.qml UI/DesktopPage.qml dist/deploy-qml/
 mkdir -p dist/WebBrowser.app/Contents/Resources
 cp README.md THIRD_PARTY.md COMPATIBILITY.md REQUIREMENTS.md dist/WebBrowser.app/Contents/Resources/
 "$QT_ROOT_DIR/bin/macdeployqt" dist/WebBrowser.app -qmldir="$PWD/dist/deploy-qml" -always-overwrite -codesign=-
+# Browser storage uses SQLite only; don't ship unavailable external drivers.
+rm -f dist/WebBrowser.app/Contents/PlugIns/sqldrivers/libqsqlodbc.dylib \
+      dist/WebBrowser.app/Contents/PlugIns/sqldrivers/libqsqlpsql.dylib \
+      dist/WebBrowser.app/Contents/PlugIns/sqldrivers/libqsqlmimer.dylib
+test -f dist/WebBrowser.app/Contents/PlugIns/sqldrivers/libqsqlite.dylib
+test -f dist/WebBrowser.app/Contents/PlugIns/platforms/libqcocoa.dylib
 helper="$(find dist/WebBrowser.app/Contents/Frameworks -name QtWebEngineProcess.app -type d -print -quit)"
 test -n "$helper"
 entitlements="$helper/Contents/Resources/QtWebEngineProcess.entitlements"

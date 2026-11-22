@@ -1,7 +1,5 @@
 # WebBrowser
 
-**Local builds:** See [the App Suite build guide](../LOCAL-BUILD.md) for the auto-detecting SDK bootstrap and direct Xmake commands.
-
 Native C++20 / Qt Quick browser. The desktop engine is Qt WebEngine (Chromium); iOS uses the system WKWebView via Objective-C++ and a native view embedded in Qt Quick. The browser chrome, tabs, preferences, history, bookmarks, and download model are shared. No engine is reimplemented.
 
 ## Build locally
@@ -50,7 +48,7 @@ xcrun simctl install booted "$(find build/ios-simulator -type d -name webbrowser
 xcrun simctl launch booted org.appsuite.webbrowser
 ```
 
-For an iPhone device, use `xmake ios-bundle --device --qt=...`, open the generated Xcode project under `build/ios-device`, configure an Apple development team, sign and run on your device. The unsigned simulator ZIP from CI cannot be installed on a physical iPhone. iOS updates use the distribution mechanism, not the desktop update feed.
+The official Qt iOS SDK uses x86-64 for the simulator, even on Apple Silicon; use a Rosetta-compatible simulator (Xcode 26 requires the universal iOS platform component). For an iPhone device, use `xmake ios-bundle --device --qt=...`, open the generated Xcode project under `build/ios-device`, configure an Apple development team, sign and run on your device. CI also builds an unsigned ARM64 device ZIP, which requires signing and provisioning before installation. The simulator ZIP cannot be installed on a physical iPhone. iOS updates use the distribution mechanism, not the desktop update feed.
 
 ## Build tests and installers
 
@@ -75,7 +73,7 @@ Package with `QT_ROOT_DIR` pointing to the same SDK, using:
 - Linux: `bash Packaging/package-linux.sh` (patchelf, dpkg-deb, xvfb and runtime libraries).
 - macOS: `bash Packaging/package-macos.sh` (macdeployqt, codesign, productbuild).
 
-CI uploads direct EXE, DEB and PKG artifacts, plus a separate iOS simulator ZIP. macOS is ad-hoc signed, not notarized. Windows is not Authenticode signed. Set `PORTABLE=1` when packaging locally for an optional portable bundle. Use `--portable` or a sibling `portable.ini` (writable directory required) to keep data next to the executable. For macOS portable data can instead use `--data-dir /path/to/data`.
+CI uploads direct EXE, DEB and PKG artifacts, plus separate unsigned iOS simulator (x86-64) and device (ARM64) ZIPs. macOS is ad-hoc signed, not notarized. Windows is not Authenticode signed. Set `PORTABLE=1` when packaging locally for an optional portable bundle. Use `--portable` or a sibling `portable.ini` (writable directory required) to keep data next to the executable. For macOS portable data can instead use `--data-dir /path/to/data`.
 
 ## Usage
 

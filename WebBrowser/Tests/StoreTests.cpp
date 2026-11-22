@@ -20,7 +20,9 @@ int main(int argc,char**argv){
         check(s.exportBookmarks(d.filePath("bookmarks.json")),"JSON export");check(s.remove(a)&&s.bookmarks().isEmpty(),"recursive removal");
         check(s.importBookmarks(d.filePath("bookmarks.html"))&&s.bookmarks().size()==3,"HTML import");
         check(s.importBookmarks(d.filePath("bookmarks.json"))&&s.bookmarks().size()==6,"JSON import");
-        check(Store::address("example.org","https://search.example/?q=%s")==url.adjusted(QUrl::StripTrailingSlash),"navigation");
+        check(Store::address("example.org","https://search.example/?q=%s")==url,"navigation");
+        check(Store::address("https://example.org","https://search.example/?q=%s")==url,"explicit root navigation");
+        check(Store::address("example.org/docs?x=1","https://search.example/?q=%s")==QUrl("https://example.org/docs?x=1"),"navigation preserves path and query");
         check(Store::address("hello world","https://search.example/?q=%s").host()=="search.example","search");
         check(!Store::webUrl(QUrl("file:///etc/passwd")),"unsafe scheme");
         check(Store::address("file:///private/example","https://search.example/?q=%s").isEmpty(),"do not send local URL to search");

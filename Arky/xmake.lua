@@ -21,9 +21,9 @@ target("ArchiveCore")
     add_headerfiles("src/core/archive_engine.hpp")
     add_includedirs("src/core", {public = true})
     add_packages("libarchive", "libzip", {public = true})
-    -- Static libarchive's XAR reader/writer uses the Windows XmlLite API.
+    -- Static libarchive's XAR reader/writer uses XmlLite and COM streams.
     if is_plat("windows") then
-        add_syslinks("xmllite", {public = true})
+        add_syslinks("xmllite", "ole32", {public = true})
     end
 
 target("Arky")

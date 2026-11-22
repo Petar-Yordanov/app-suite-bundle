@@ -5,7 +5,7 @@ This is a source-level implementation audit, not a declaration that every featur
 | Requirement | Implementation / acceptance evidence |
 | --- | --- |
 | C++20, Qt 6, QML, Xmake | `xmake.lua`, C++ controllers/models, QML chrome; iOS Xmake task invokes Qt's static CMake/Xcode linker. |
-| Desktop and iPhone engines | `DesktopPage.qml`, `DesktopProfiles.cpp` use Qt WebEngine; `IOSView.mm` uses WKWebView. CI builds Windows x64, Linux x64, macOS ARM64 and iOS ARM64 simulator. Other desktop architectures depend on Qt SDK availability. |
+| Desktop and iPhone engines | `DesktopPage.qml`, `DesktopProfiles.cpp` use Qt WebEngine; `IOSView.mm` uses WKWebView. CI builds Windows x64, Linux x64, macOS ARM64, iOS x86-64 simulator and iOS ARM64 device. Other desktop architectures depend on Qt SDK availability. |
 | Tabs, reordering, reopen | `Browser.cpp`, `Main.qml`; store/model tests. Private closed tabs intentionally excluded. |
 | Independently configurable session restoration | Settings for open tabs, selected tab, closed regular tabs and desktop session cookies. Tests cover selection, lazy tabs and privacy. |
 | Private browsing, remember-me | Dedicated off-the-record Qt profile / nonpersistent WK data store; normal persistent profile. Packaged desktop smoke checks cookie isolation and private profile reset. Websites control login lifetime. |

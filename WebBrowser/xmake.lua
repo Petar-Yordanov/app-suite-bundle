@@ -59,7 +59,9 @@ task("ios-bundle")
         local output = path.absolute(simulator and "build/ios-simulator" or "build/ios-device")
         os.vrunv(path.join(qt,"bin","qt-cmake"), {"-S", ".", "-B",output,"-G","Xcode",
             "-DCMAKE_OSX_SYSROOT=" .. (simulator and "iphonesimulator" or "iphoneos"),
-            "-DCMAKE_OSX_ARCHITECTURES=arm64","-DCMAKE_OSX_DEPLOYMENT_TARGET=17.0",
+            -- The official Qt iOS SDK uses x86_64 for simulator binaries
+            -- and arm64 for physical devices (even on Apple Silicon hosts).
+            "-DCMAKE_OSX_ARCHITECTURES=" .. (simulator and "x86_64" or "arm64"),"-DCMAKE_OSX_DEPLOYMENT_TARGET=17.0",
             "-DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO"})
         os.vrunv("cmake", {"--build",output,"--config","Release"})
     end)
