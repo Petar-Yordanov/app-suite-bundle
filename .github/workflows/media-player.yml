@@ -1,0 +1,230 @@
+name: Build MediaPlayer
+
+on:
+  push:
+    paths:
+      - 'MediaPlayer/**'
+      - '.github/workflows/media-player.yml'
+      - 'tools/publish_release.py'
+  pull_request:
+    paths:
+      - 'MediaPlayer/**'
+      - '.github/workflows/media-player.yml'
+      - 'tools/publish_release.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: MediaPlayer-${{ matrix.os }}-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows, arch: x64,   runner: windows-2022, xmake_platform: windows, xmake_arch: x64,    qt_host: windows, qt_arch: win64_msvc2022_64 }
+          - { os: linux,   arch: x64,   runner: ubuntu-24.04, xmake_platform: linux,   xmake_arch: x86_64, qt_host: linux,   qt_arch: linux_gcc_64 }
+          - { os: macos,   arch: arm64, runner: macos-15,     xmake_platform: macosx,  xmake_arch: arm64,  qt_host: mac,     qt_arch: clang_64 }
+
+    env:
+      QT_VERSION: '6.8.3'
+      APP_VERSION: '1.0.0'
+      PORTABLE: '0'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libxrandr-dev libxfixes-dev libgl-dev libegl-dev libxcb-cursor0 libxkbcommon-x11-0 patchelf xvfb xauth nasm
+
+      - name: Set up Xmake
+        uses: xmake-io/github-action-setup-xmake@v1
+        with:
+          xmake-version: '3.1.1'
+
+      - name: Install Qt SDK
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: ${{ matrix.qt_host }}
+          target: desktop
+          arch: ${{ matrix.qt_arch }}
+          modules: qtimageformats
+          cache: true
+
+      - name: Locate MediaPlayer project
+        id: mediaplayer_project
+        shell: bash
+        run: |
+          for dir in MediaPlayer MediaPlayer/MediaPlayer; do
+            if [[ -f "$dir/xmake.lua" && -f "$dir/App/Player.cpp" && -f "$dir/UI/Controls.qml" && -f "$dir/Tests/fixtures/sample.mkv" ]]; then
+              printf 'directory=%s\n' "$dir" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          echo '::error::MediaPlayer project not found. Extract MediaPlayer.zip at the repository root, preserving paths.'
+          exit 1
+
+      - name: Install libVLC SDK and runtime (Windows)
+        if: runner.os == 'Windows'
+        working-directory: ${{ steps.mediaplayer_project.outputs.directory }}
+        shell: pwsh
+        run: ./Packaging/fetch-vlc-windows.ps1
+
+      - name: Install libVLC SDK and runtime (macOS)
+        if: runner.os == 'macOS'
+        working-directory: ${{ steps.mediaplayer_project.outputs.directory }}
+        shell: bash
+        run: bash Packaging/fetch-vlc-macos.sh
+
+      - name: Install libVLC SDK and runtime (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get install -y libvlc-dev libvlc5 vlc-plugin-base vlc-plugin-video-output vlc-plugin-access-extra
+          printf 'VLC_INCLUDE_DIR=/usr/include\n' >> "$GITHUB_ENV"
+
+      - name: Build MediaPlayer (Windows)
+        if: runner.os == 'Windows'
+        working-directory: ${{ steps.mediaplayer_project.outputs.directory }}
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          xmake f -c -y -P . -F xmake.lua -p windows -a x64 -m release --vs=2022 "--qt=$env:QT_ROOT_DIR" "--vlc_include=$env:VLC_INCLUDE_DIR"
+          xmake build -y mediaplayer
+          xmake build -y mediaplayer-core-tests
+          xmake build -y mediaplayer-tests
+
+      - name: Build MediaPlayer (Linux/macOS)
+        if: runner.os != 'Windows'
+        working-directory: ${{ steps.mediaplayer_project.outputs.directory }}
+        shell: bash
+        run: |
+          xmake f -c -y -P . -F xmake.lua -p "${{ matrix.xmake_platform }}" -a "${{ matrix.xmake_arch }}" -m release --qt="$QT_ROOT_DIR" --vlc_include="$VLC_INCLUDE_DIR"
+          xmake build -y mediaplayer
+          xmake build -y mediaplayer-core-tests
+          xmake build -y mediaplayer-tests
+
+      - name: Run MediaPlayer core tests
+        working-directory: ${{ steps.mediaplayer_project.outputs.directory }}
+        run: xmake run mediaplayer-core-tests
+
+      - name: Run MediaPlayer integration tests (Linux)
+        if: runner.os == 'Linux'
+        working-directory: ${{ steps.mediaplayer_project.outputs.directory }}
+        env:
+          QT_QPA_PLATFORM: xcb
+          QT_QUICK_BACKEND: software
+        run: xvfb-run -a xmake run mediaplayer-tests "$PWD/Tests/fixtures"
+
+      - name: Run MediaPlayer integration tests (macOS)
+        if: runner.os == 'macOS'
+        working-directory: ${{ steps.mediaplayer_project.outputs.directory }}
+        env:
+          QT_QUICK_BACKEND: software
+        run: xmake run mediaplayer-tests "$PWD/Tests/fixtures"
+
+      - name: Run MediaPlayer integration tests (Windows)
+        if: runner.os == 'Windows'
+        working-directory: ${{ steps.mediaplayer_project.outputs.directory }}
+        shell: pwsh
+        env:
+          QT_QUICK_BACKEND: software
+        run: xmake run mediaplayer-tests "$PWD/Tests/fixtures"
+
+      - name: MediaPlayer playback benchmark (Linux)
+        if: runner.os == 'Linux'
+        working-directory: ${{ steps.mediaplayer_project.outputs.directory }}
+        env:
+          QT_QPA_PLATFORM: xcb
+          QT_QUICK_BACKEND: software
+        run: xvfb-run -a xmake run mediaplayer --benchmark --software-output --benchmark-seconds 3 "$PWD/Tests/fixtures/sample.mkv"
+
+      - name: MediaPlayer playback benchmark (macOS)
+        if: runner.os == 'macOS'
+        working-directory: ${{ steps.mediaplayer_project.outputs.directory }}
+        env:
+          QT_QUICK_BACKEND: software
+        run: xmake run mediaplayer --benchmark --software-output --benchmark-seconds 3 "$PWD/Tests/fixtures/sample.mkv"
+
+      - name: MediaPlayer playback benchmark (Windows)
+        if: runner.os == 'Windows'
+        working-directory: ${{ steps.mediaplayer_project.outputs.directory }}
+        shell: pwsh
+        env:
+          QT_QUICK_BACKEND: software
+        run: xmake run mediaplayer --benchmark --software-output --benchmark-seconds 3 "$PWD/Tests/fixtures/sample.mkv"
+
+      - name: Build MediaPlayer Windows installer
+        if: runner.os == 'Windows'
+        working-directory: ${{ steps.mediaplayer_project.outputs.directory }}
+        shell: pwsh
+        run: ./Packaging/package-windows.ps1
+
+      - name: Build MediaPlayer macOS installer
+        if: runner.os == 'macOS'
+        working-directory: ${{ steps.mediaplayer_project.outputs.directory }}
+        shell: bash
+        run: bash Packaging/package-macos.sh
+
+      - name: Build MediaPlayer Linux installer
+        if: runner.os == 'Linux'
+        working-directory: ${{ steps.mediaplayer_project.outputs.directory }}
+        shell: bash
+        run: bash Packaging/package-linux.sh
+
+      - name: Upload MediaPlayer Windows installer
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v7
+        with:
+          path: ${{ steps.mediaplayer_project.outputs.directory }}/artifacts/MediaPlayer-windows-x64-setup.exe
+          archive: false
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload MediaPlayer macOS installer
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v7
+        with:
+          path: ${{ steps.mediaplayer_project.outputs.directory }}/artifacts/MediaPlayer-macos-arm64.pkg
+          archive: false
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload MediaPlayer Linux installer
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v7
+        with:
+          path: ${{ steps.mediaplayer_project.outputs.directory }}/artifacts/MediaPlayer-linux-x64.deb
+          archive: false
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish latest MediaPlayer installers
+    needs: build
+    if: ${{ github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v8
+        with:
+          path: release-installers
+          merge-multiple: true
+      - name: Publish verified release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/publish_release.py release-installers MediaPlayer-windows-x64-setup.exe MediaPlayer-linux-x64.deb MediaPlayer-macos-arm64.pkg

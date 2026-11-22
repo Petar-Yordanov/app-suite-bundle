@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=Docker GUI
+Comment=Manage an existing Docker engine
+Exec=dockergui
+Terminal=false
+Type=Application
+Categories=Development;Utility;

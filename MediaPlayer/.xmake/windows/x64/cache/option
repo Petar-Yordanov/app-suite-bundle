@@ -1,0 +1,21 @@
+{
+    vlc_include = {
+        __sourceinfo_default = {
+            [""] = {
+                line = 12,
+                file = [[.\xmake.lua]]
+            }
+        },
+        default = "",
+        showmenu = true,
+        __scriptdir = [[D:\Projects\app-suite-bundle\MediaPlayer]],
+        description = "Directory containing the official libVLC 3 vlc/vlc.h headers",
+        __sourceinfo_description = {
+            ["Directory containing the official libVLC 3 vlc/vlc.h headers"] = {
+                line = 14,
+                file = [[.\xmake.lua]]
+            }
+        },
+        __sourceinfo_showmenu = { }
+    }
+}

@@ -2,6 +2,19 @@ set_project("ScreenshotTool")
 set_version("1.0.0")
 set_languages("cxx20")
 add_rules("mode.debug", "mode.release")
+
+-- Explicit SDK (CI or local override) wins; otherwise use Xmake's Qt packages.
+-- Do not mix the SDK provided by CI with a second Qt package installation.
+local configured_qt = get_config("qt")
+local explicit_sdk = configured_qt and configured_qt ~= "" and configured_qt ~= "auto"
+local env_sdk = os.getenv("QT_ROOT_DIR")
+if not explicit_sdk and env_sdk and #env_sdk > 0 then
+    set_config("qt", env_sdk)
+end
+local use_qt_packages = not explicit_sdk and not (env_sdk and #env_sdk > 0)
+if use_qt_packages then
+    add_requires("qt6quick", "qt6widgets")
+end
 set_warnings("all")
 if is_plat("windows") then
     set_runtimes("MD")
@@ -30,6 +43,7 @@ for _, name in ipairs({"screenshottool", "screenshottool-tests", "screenshottool
         end
         add_files("Core/*.cpp", "Platform/Startup.cpp", "App/Controller.cpp", "App/Updater.cpp", "UI/resources.qrc")
         add_files("App/Controller.hpp", "App/Updater.hpp", "Platform/Native.hpp")
+        if use_qt_packages then add_packages("qt6quick", "qt6widgets") end
         add_frameworks("QtCore", "QtGui", "QtWidgets", "QtQml", "QtQuick", "QtQuickControls2", "QtNetwork", "QtConcurrent")
         if is_plat("windows") then
             add_files("Platform/Windows.cpp")

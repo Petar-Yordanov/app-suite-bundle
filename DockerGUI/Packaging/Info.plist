@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key><string>org.appsuite.dockergui</string>
+  <key>CFBundleName</key><string>DockerGUI</string>
+  <key>CFBundleDisplayName</key><string>Docker GUI</string>
+  <key>CFBundleExecutable</key><string>dockergui</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>1.0.0</string>
+  <key>CFBundleVersion</key><string>1.0.0</string>
+  <key>NSHighResolutionCapable</key><true/>
+  <key>NSAppleEventsUsageDescription</key><string>Open a native Terminal session for interactive Docker exec.</string>
+</dict>
+</plist>

@@ -1,0 +1,8 @@
+{
+  "version": "1.0.1",
+  "artifacts": {
+    "windows-x86_64": {"url": "https://example.invalid/MediaPlayer-windows-x64-setup.exe", "filename": "MediaPlayer-windows-x64-setup.exe", "sha256": "REPLACE_WITH_64_HEX_DIGITS"},
+    "macos-arm64": {"url": "https://example.invalid/MediaPlayer-macos-arm64.pkg", "filename": "MediaPlayer-macos-arm64.pkg", "sha256": "REPLACE_WITH_64_HEX_DIGITS"},
+    "linux-x86_64": {"url": "https://example.invalid/MediaPlayer-linux-x64.deb", "filename": "MediaPlayer-linux-x64.deb", "sha256": "REPLACE_WITH_64_HEX_DIGITS"}
+  }
+}

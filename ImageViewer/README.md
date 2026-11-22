@@ -1,5 +1,7 @@
 # Image Viewer — AppSuite
 
+**Local builds:** See [the App Suite build guide](../LOCAL-BUILD.md) for the auto-detecting SDK bootstrap and direct Xmake commands.
+
 A native C++20 / Qt 6 Quick viewer, using Xmake. Local files only; no accounts, analytics, editing, slideshow, or browser engine.
 
 ## Build

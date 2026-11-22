@@ -1,0 +1,7 @@
+.xmake/
+build/
+dist/
+artifacts/
+*.iss
+__pycache__/
+ScreenRecorder-data/

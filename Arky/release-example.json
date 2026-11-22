@@ -1,0 +1,8 @@
+{
+  "version": "0.9.1",
+  "artifacts": {
+    "windows-x86_64": {"url": "https://example.invalid/Arky-windows-x64-setup.exe", "filename": "Arky-windows-x64-setup.exe", "sha256": "REPLACE_WITH_64_HEX_DIGITS"},
+    "macos-arm64": {"url": "https://example.invalid/Arky-macos-arm64.pkg", "filename": "Arky-macos-arm64.pkg", "sha256": "REPLACE_WITH_64_HEX_DIGITS"},
+    "linux-x86_64": {"url": "https://example.invalid/Arky-linux-x64.deb", "filename": "Arky-linux-x64.deb", "sha256": "REPLACE_WITH_64_HEX_DIGITS"}
+  }
+}

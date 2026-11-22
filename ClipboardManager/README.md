@@ -1,5 +1,7 @@
 # ClipDeck — native clipboard manager
 
+**Local builds:** See [the App Suite build guide](../LOCAL-BUILD.md) for the auto-detecting SDK bootstrap and direct Xmake commands.
+
 ClipDeck is a C++20, Qt 6 Quick/QML desktop clipboard manager. It keeps clipboard history on the local machine, without accounts, telemetry, synchronization, or pinned entries.
 
 ## Build

@@ -1,0 +1,179 @@
+name: Build TerminalEmulator
+
+on:
+  push:
+    paths:
+      - 'TerminalEmulator/**'
+      - '.github/workflows/terminal-emulator.yml'
+      - 'tools/publish_release.py'
+  pull_request:
+    paths:
+      - 'TerminalEmulator/**'
+      - '.github/workflows/terminal-emulator.yml'
+      - 'tools/publish_release.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: TerminalEmulator-${{ matrix.os }}-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows, arch: x64,   runner: windows-2022, xmake_platform: windows, xmake_arch: x64,    qt_host: windows, qt_arch: win64_msvc2022_64 }
+          - { os: linux,   arch: x64,   runner: ubuntu-24.04, xmake_platform: linux,   xmake_arch: x86_64, qt_host: linux,   qt_arch: linux_gcc_64 }
+          - { os: macos,   arch: arm64, runner: macos-15,     xmake_platform: macosx,  xmake_arch: arm64,  qt_host: mac,     qt_arch: clang_64 }
+
+    env:
+      QT_VERSION: '6.8.3'
+      APP_VERSION: '1.0.0'
+      PORTABLE: '0'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libxrandr-dev libxfixes-dev libgl-dev libegl-dev libxcb-cursor0 libxkbcommon-x11-0 patchelf xvfb xauth nasm
+
+      - name: Set up Xmake
+        uses: xmake-io/github-action-setup-xmake@v1
+        with:
+          xmake-version: '3.1.1'
+
+      - name: Install Qt SDK
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: ${{ matrix.qt_host }}
+          target: desktop
+          arch: ${{ matrix.qt_arch }}
+          modules: qtimageformats
+          cache: true
+
+      - name: Locate Terminal Emulator project
+        id: terminal_project
+        shell: bash
+        run: |
+          test -f TerminalEmulator/xmake.lua
+          printf 'directory=TerminalEmulator\n' >> "$GITHUB_OUTPUT"
+
+      - name: Build and test Terminal Emulator (Windows)
+        if: runner.os == 'Windows'
+        working-directory: ${{ steps.terminal_project.outputs.directory }}
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          xmake f -c -y -p windows -a x64 -m release --vs=2022 "--qt=$env:QT_ROOT_DIR"
+          xmake build -y terminalemulator
+          xmake build -y terminal-pty-tests
+          xmake build -y terminal-vt-tests
+          xmake build -y terminal-layout-tests
+          xmake run terminal-pty-tests
+          xmake run terminal-vt-tests
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          $env:QT_QUICK_BACKEND = 'software'
+          xmake run terminal-layout-tests
+          xmake run terminalemulator --smoke-test
+
+      - name: Build and test Terminal Emulator (Linux/macOS)
+        if: runner.os != 'Windows'
+        working-directory: ${{ steps.terminal_project.outputs.directory }}
+        shell: bash
+        run: |
+          xmake f -c -y -p "${{ matrix.xmake_platform }}" -a "${{ matrix.xmake_arch }}" -m release --qt="$QT_ROOT_DIR"
+          xmake build -y terminalemulator
+          xmake build -y terminal-pty-tests
+          xmake build -y terminal-vt-tests
+          xmake build -y terminal-layout-tests
+          xmake run terminal-pty-tests
+          xmake run terminal-vt-tests
+          QT_QPA_PLATFORM=offscreen xmake run terminal-layout-tests
+          QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software xmake run terminalemulator --smoke-test
+
+      - name: Measure Terminal Emulator GUI process (Linux)
+        if: runner.os == 'Linux'
+        working-directory: ${{ steps.terminal_project.outputs.directory }}
+        shell: bash
+        run: |
+          exe="$(find build -type f -name terminalemulator -print -quit)"
+          test -n "$exe"
+          xvfb-run -a env QT_QUICK_BACKEND=software python3 Benchmarks/gui.py --exe "$exe" | tee /tmp/terminalemulator-bench.json
+          printf '### Terminal Emulator GUI benchmark\n\n```json\n' >> "$GITHUB_STEP_SUMMARY"
+          cat /tmp/terminalemulator-bench.json >> "$GITHUB_STEP_SUMMARY"
+          printf '\n```\n' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build Terminal Emulator Windows installer
+        if: runner.os == 'Windows'
+        working-directory: ${{ steps.terminal_project.outputs.directory }}
+        shell: pwsh
+        run: ./Packaging/package-windows.ps1
+
+      - name: Build Terminal Emulator macOS installer
+        if: runner.os == 'macOS'
+        working-directory: ${{ steps.terminal_project.outputs.directory }}
+        shell: bash
+        run: bash Packaging/package-macos.sh
+
+      - name: Build Terminal Emulator Linux installer
+        if: runner.os == 'Linux'
+        working-directory: ${{ steps.terminal_project.outputs.directory }}
+        shell: bash
+        run: bash Packaging/package-linux.sh
+
+      - name: Upload Terminal Emulator Windows installer
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v7
+        with:
+          path: ${{ steps.terminal_project.outputs.directory }}/artifacts/TerminalEmulator-windows-x64-setup.exe
+          archive: false
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload Terminal Emulator macOS installer
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v7
+        with:
+          path: ${{ steps.terminal_project.outputs.directory }}/artifacts/TerminalEmulator-macos-arm64.pkg
+          archive: false
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload Terminal Emulator Linux installer
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v7
+        with:
+          path: ${{ steps.terminal_project.outputs.directory }}/artifacts/TerminalEmulator-linux-x64.deb
+          archive: false
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish latest TerminalEmulator installers
+    needs: build
+    if: ${{ github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v8
+        with:
+          path: release-installers
+          merge-multiple: true
+      - name: Publish verified release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/publish_release.py release-installers TerminalEmulator-windows-x64-setup.exe TerminalEmulator-linux-x64.deb TerminalEmulator-macos-arm64.pkg

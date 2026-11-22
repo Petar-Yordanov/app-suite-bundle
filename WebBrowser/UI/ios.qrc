@@ -1,0 +1,5 @@
+<RCC><qresource prefix="/">
+<file>Main.qml</file>
+<file>IOSPage.qml</file>
+<file>Compatibility.html</file>
+</qresource></RCC>

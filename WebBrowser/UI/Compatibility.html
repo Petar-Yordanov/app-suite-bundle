@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Browser compatibility checks</title>
+<style>
+:root{color-scheme:light dark;font:16px system-ui,sans-serif}body{margin:20px auto;padding:0 16px;max-width:850px}
+h1{font-size:1.5rem}h2{font-size:1.15rem;margin-top:1.4em}p{line-height:1.5}table{border-collapse:collapse;width:100%;table-layout:fixed}
+td,th{text-align:left;padding:8px;border-bottom:1px solid #8885;overflow-wrap:anywhere}th:first-child{width:60%}
+.pass{color:#19894b}.fail{color:#d65245}.note{color:#b4862b}button,input{font:inherit;margin:5px 3px;padding:6px}
+pre{white-space:pre-wrap;overflow-wrap:anywhere}video{max-width:100%;max-height:260px;background:#111}
+</style>
+</head>
+<body>
+<h1>Browser compatibility checks</h1>
+<p>These checks run on your computer. The page does not make external requests or save recordings. Browser-engine/CDM internals may have their own network behavior. A supported codec or DRM API does not prove that Netflix accepts this browser.</p>
+<p id="summary" role="status">Running automated capability checks...</p>
+<table><thead><tr><th>Capability</th><th>Result</th></tr></thead><tbody id="results"></tbody></table>
+<h2>Physical microphone and camera</h2>
+<p>Start a device test to prompt for access. Camera preview stays here; audio is checked for a signal without playing it back. Press Stop devices to release resources.</p>
+<button id="mic">Test microphone</button><button id="cam">Test camera</button><button id="both">Test both</button><button id="stop">Stop devices</button>
+<p id="devices" role="status">Not tested.</p>
+<video id="preview" muted autoplay playsinline></video>
+<h2>Local audio/video call</h2>
+<p>Send a generated audio signal and an animated test card between two local WebRTC peers. No microphone, camera or external peer is used.</p>
+<button id="call">Test synthetic call</button><p id="callStatus">Not tested.</p>
+<video id="callPreview" muted autoplay playsinline></video>
+<h2>Actual local media playback</h2>
+<p>Choose an MP4 or WebM test clip that you own. Nothing is uploaded.</p>
+<input type="file" id="file" accept="video/*,audio/*"><button id="clearFile">Clear</button>
+<p id="playback" role="status">Not tested.</p>
+<video id="clip" controls playsinline></video>
+<h2>Diagnostic report</h2>
+<button id="copy">Copy report</button><p id="copyStatus"></p><pre id="report"></pre>
+<script>
+'use strict';
+const rows = document.getElementById('results'), results = {};
+const required = new URLSearchParams(location.search);
+function record(key, label, ok, detail='', optional=false) {
+    results[key] = {ok: Boolean(ok), detail: String(detail)};
+    const tr = document.createElement('tr'), a = document.createElement('td'), b = document.createElement('td');
+    a.textContent=label; b.textContent=(ok?'PASS':optional?'Unavailable':'FAIL')+(detail?' — '+detail:'');
+    b.className=ok?'pass':optional?'note':'fail'; tr.append(a,b); rows.append(tr);
+}
+const timeout = (promise, ms) => new Promise((resolve,reject) => {
+    const t=setTimeout(()=>reject(new Error('Timed out')),ms);
+    Promise.resolve(promise).then(x=>{clearTimeout(t);resolve(x)},e=>{clearTimeout(t);reject(e)});
+});
+const err = e => (e && (e.name+': '+e.message)) || String(e);
+const video=document.createElement('video'), audio=document.createElement('audio');
+const h264='video/mp4; codecs="avc1.42E01E"', aac='audio/mp4; codecs="mp4a.40.2"';
+function codec(key,label,el,mime) {
+    const support=el.canPlayType(mime);
+    record(key,label,Boolean(support),support||'not advertised',true);
+}
+function mse(key,label,mime) {
+    const supported=Boolean(window.MediaSource && MediaSource.isTypeSupported(mime));
+    record(key,label,supported,'MediaSource',true);
+}
+async function eme(key,label,system,container,withAudio) {
+    try {
+        if(!navigator.requestMediaKeySystemAccess)throw new Error('Encrypted Media Extensions unavailable');
+        const config={initDataTypes:[container.includes('webm')?'webm':'cenc'],
+            videoCapabilities:[{contentType:container}],distinctiveIdentifier:'not-allowed',
+            persistentState:'optional',sessionTypes:['temporary']};
+        if(withAudio)config.audioCapabilities=[{contentType:aac}];
+        const access=await timeout(navigator.requestMediaKeySystemAccess(system,[config]),6000);
+        await timeout(access.createMediaKeys(),6000);
+        record(key,label,true,'CDM accepted and initialized (no license or content tested)',true);
+    } catch(e){record(key,label,false,err(e),true)}
+}
+function localPeers() {
+        const a=new RTCPeerConnection({iceServers:[]}), b=new RTCPeerConnection({iceServers:[]});
+        const queuedA=[],queuedB=[]; let readyA=false,readyB=false;
+        a.onicecandidate=e=>{if(e.candidate){if(readyB)b.addIceCandidate(e.candidate).catch(()=>{});else queuedB.push(e.candidate)}};
+        b.onicecandidate=e=>{if(e.candidate){if(readyA)a.addIceCandidate(e.candidate).catch(()=>{});else queuedA.push(e.candidate)}};
+        async function negotiate(){
+            await a.setLocalDescription(await a.createOffer());
+            await b.setRemoteDescription(a.localDescription);readyB=true;
+            for(const candidate of queuedB)await b.addIceCandidate(candidate);
+            await b.setLocalDescription(await b.createAnswer());
+            await a.setRemoteDescription(b.localDescription);readyA=true;
+            for(const candidate of queuedA)await a.addIceCandidate(candidate);
+        }
+        return {a,b,negotiate};
+}
+async function rtc() {
+    let peers;
+    try {
+        peers=localPeers();const {a,b,negotiate}=peers;
+        const message='local-webrtc-test';
+        const exchange=new Promise((resolve,reject)=>{
+            b.ondatachannel=({channel})=>{channel.onmessage=e=>e.data===message?resolve():reject(new Error('Unexpected data channel payload'))};
+            const channel=a.createDataChannel('check');channel.onopen=()=>channel.send(message);
+            channel.onerror=()=>reject(new Error('Data channel error'));
+        });
+        await timeout(Promise.all([negotiate(),exchange]),15000);
+        record('rtcLoop','WebRTC peer-to-peer data channel',true,'Two local peers exchanged a message; no STUN/TURN server');
+    } catch(e){record('rtcLoop','WebRTC peer-to-peer data channel',false,err(e))}
+    finally{if(peers){peers.a.close();peers.b.close()}}
+}
+async function run(){
+    record('secure','Secure context',window.isSecureContext);
+    record('getUserMedia','Camera and microphone API',!!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia));
+    record('screen','Screen sharing API',!!(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia),'OS permissions still apply',true);
+    record('rtc','WebRTC API',typeof RTCPeerConnection==='function');
+    const sender=window.RTCRtpSender && RTCRtpSender.prototype;
+    const receiver=window.RTCRtpReceiver && RTCRtpReceiver.prototype;
+    const encoded=Boolean((sender && receiver && sender.createEncodedStreams && receiver.createEncodedStreams)||typeof RTCRtpScriptTransform==='function');
+    record('encoded','WebRTC encoded transforms (E2EE prerequisite)',encoded,'API presence only; Discord DAVE negotiation not tested');
+    for(const kind of ['audio','video']){
+        const caps=window.RTCRtpSender && RTCRtpSender.getCapabilities ? RTCRtpSender.getCapabilities(kind):null;
+        record('rtc'+kind,'WebRTC '+kind+' codec capabilities',!!(caps && caps.codecs.length),caps?caps.codecs.map(x=>x.mimeType).filter((v,i,a)=>a.indexOf(v)===i).join(', '):'unavailable',true);
+    }
+    codec('h264','H.264 / AVC (MP4)',video,h264);
+    codec('aac','AAC-LC (MP4)',audio,aac);
+    codec('vp9','VP9 (WebM)',video,'video/webm; codecs="vp9"');
+    codec('av1','AV1 (MP4)',video,'video/mp4; codecs="av01.0.05M.08"');
+    codec('opus','Opus (WebM)',audio,'audio/webm; codecs="opus"');
+    mse('mseH264','Adaptive streaming: H.264',h264);
+    mse('mseAAC','Adaptive streaming: AAC',aac);
+    await Promise.all([
+        rtc(),
+        eme('widevineWebm','Widevine CDM (VP9/WebM)','com.widevine.alpha','video/webm; codecs="vp9"',false),
+        eme('widevineMp4','Widevine CDM (H.264/AAC)','com.widevine.alpha',h264,true)
+    ]);
+    const must=['secure','getUserMedia','rtc','encoded','rtcLoop'];
+    if(required.has('codecs')||required.has('widevine'))must.push('h264','aac','mseH264','mseAAC');
+    if(required.has('widevine'))must.push('widevineMp4');
+    const pass=must.every(k=>results[k] && results[k].ok);
+    document.getElementById('summary').textContent=pass?'Required capability checks passed. Test the actual websites next.':'Required capability checks failed. See the individual results.';
+    updateReport();
+    document.title=(pass?'COMPAT-PASS':'COMPAT-FAIL')+' '+Object.entries(results).map(([k,v])=>k+'='+Number(v.ok)).join(' ');
+}
+let stream=null,ctx=null,levelTimer=null,mediaEpoch=0,clipUrl=null;
+const preview=document.getElementById('preview'), clip=document.getElementById('clip');
+const deviceText=document.getElementById('devices'), playback=document.getElementById('playback');
+const manual={devices:'Not tested',playback:'Not tested',syntheticCall:'Not tested'};
+function updateReport(){
+    document.getElementById('report').textContent=JSON.stringify({userAgent:navigator.userAgent,capabilities:results,manual},null,2);
+}
+function stopDevices(){
+    ++mediaEpoch;
+    if(levelTimer)clearInterval(levelTimer);levelTimer=null;
+    if(stream)stream.getTracks().forEach(t=>t.stop());stream=null;preview.srcObject=null;
+    if(ctx)ctx.close().catch(()=>{});ctx=null;
+}
+async function testDevices(wantAudio,wantVideo){
+    stopDevices();const epoch=mediaEpoch;
+    deviceText.textContent='Waiting for your permission...';
+    try{
+        const found=await navigator.mediaDevices.getUserMedia({audio:wantAudio,video:wantVideo});
+        if(epoch!==mediaEpoch){found.getTracks().forEach(t=>t.stop());return}
+        stream=found;preview.srcObject=stream;
+        if(wantVideo)await preview.play();
+        manual.devices=stream.getTracks().map(t=>t.kind+' '+t.readyState).join(', ');
+        deviceText.textContent=manual.devices;
+        if(wantAudio){
+            ctx=new AudioContext();await ctx.resume();if(epoch!==mediaEpoch)return;
+            const analyser=ctx.createAnalyser();ctx.createMediaStreamSource(stream).connect(analyser);
+            const samples=new Float32Array(analyser.fftSize);let signal=false;
+            levelTimer=setInterval(()=>{
+                analyser.getFloatTimeDomainData(samples);
+                const peak=samples.reduce((v,s)=>Math.max(v,Math.abs(s)),0);
+                if(peak>0.005)signal=true;
+                manual.devices=stream.getTracks().map(t=>t.kind+' '+t.readyState).join(', ')+(signal?'; microphone signal detected':'; speak to check input');
+                deviceText.textContent=manual.devices;updateReport();
+            },300);
+        }
+    }catch(e){if(epoch===mediaEpoch){stopDevices();manual.devices=err(e);deviceText.textContent=manual.devices}}
+    updateReport();
+}
+document.getElementById('mic').onclick=()=>testDevices(true,false);
+document.getElementById('cam').onclick=()=>testDevices(false,true);
+document.getElementById('both').onclick=()=>testDevices(true,true);
+document.getElementById('stop').onclick=()=>{stopDevices();deviceText.textContent=manual.devices+' — stopped';updateReport()};
+document.getElementById('call').onclick=async function(){
+    this.disabled=true;
+    const status=document.getElementById('callStatus'), output=document.getElementById('callPreview');
+    let peers,context,source,paintTimer,generatedVideo,generatedAudio;
+    status.textContent='Establishing local audio/video call...';
+    try{
+        context=new AudioContext();await context.resume();
+        source=context.createOscillator();const gain=context.createGain(), dest=context.createMediaStreamDestination();
+        gain.gain.value=0.05;source.connect(gain).connect(dest);source.start();
+        generatedAudio=dest.stream;
+        const canvas=document.createElement('canvas');canvas.width=320;canvas.height=180;
+        const drawing=canvas.getContext('2d');
+        let frame=0;
+        function paint(){drawing.fillStyle=frame%2?'#2868ac':'#164f83';drawing.fillRect(0,0,320,180);drawing.fillStyle='white';drawing.font='22px sans-serif';drawing.fillText('Local WebRTC '+frame++,12,90)}
+        paint();paintTimer=setInterval(paint,80);generatedVideo=canvas.captureStream(12);
+        peers=localPeers();const inbound=new MediaStream();output.srcObject=inbound;
+        peers.b.ontrack=e=>{inbound.addTrack(e.track);output.play().catch(()=>{})};
+        peers.a.addTrack(generatedAudio.getAudioTracks()[0],generatedAudio);
+        peers.a.addTrack(generatedVideo.getVideoTracks()[0],generatedVideo);
+        await timeout(peers.negotiate(),12000);
+        const end=Date.now()+14000;
+        let receivedAudio=0,receivedVideo=0,decodedFrames=0,codecs=[];
+        while(Date.now()<end){
+            const stats=await peers.b.getStats();
+            for(const r of stats.values())if(r.type==='inbound-rtp'&&!r.isRemote){
+                const kind=r.kind||r.mediaType;
+                if(kind==='audio')receivedAudio=r.packetsReceived||0;
+                if(kind==='video'){receivedVideo=r.packetsReceived||0;decodedFrames=r.framesDecoded||0}
+                const codec=stats.get(r.codecId);if(codec && !codecs.includes(codec.mimeType))codecs.push(codec.mimeType);
+            }
+            if(receivedAudio>0&&receivedVideo>0&&decodedFrames>0)break;
+            await new Promise(r=>setTimeout(r,500));
+        }
+        if(!receivedAudio||!receivedVideo||!decodedFrames)throw new Error('Did not receive audio and decoded video. Audio packets: '+receivedAudio+', video packets: '+receivedVideo+', decoded frames: '+decodedFrames);
+        manual.syntheticCall='PASS: audio packets '+receivedAudio+', video packets '+receivedVideo+', decoded frames '+decodedFrames+'; '+codecs.join(', ');
+    }catch(e){manual.syntheticCall='FAIL: '+err(e)}
+    finally{
+        if(paintTimer)clearInterval(paintTimer);
+        for(const s of [generatedAudio,generatedVideo])if(s)s.getTracks().forEach(t=>t.stop());
+        if(source)try{source.stop()}catch(e){}
+        if(context)await context.close().catch(()=>{});
+        if(peers){peers.a.close();peers.b.close()}
+        output.srcObject=null;status.textContent=manual.syntheticCall;this.disabled=false;updateReport();
+    }
+};
+function clearClip(){
+    clip.pause();clip.removeAttribute('src');clip.load();
+    if(clipUrl)URL.revokeObjectURL(clipUrl);clipUrl=null;
+}
+document.getElementById('file').onchange=()=>{clearClip();const f=document.getElementById('file').files[0];if(f){clipUrl=URL.createObjectURL(f);clip.src=clipUrl;playback.textContent='Press play.'}};
+clip.onplaying=()=>{manual.playback='Playing selected local clip ('+clip.videoWidth+' x '+clip.videoHeight+')';playback.textContent=manual.playback;updateReport()};
+clip.onerror=()=>{if(clipUrl){manual.playback='Media error '+(clip.error&&clip.error.code);playback.textContent=manual.playback;updateReport()}};
+document.getElementById('clearFile').onclick=()=>{clearClip();document.getElementById('file').value='';playback.textContent='Cleared.'};
+document.getElementById('copy').onclick=async()=>{try{await navigator.clipboard.writeText(document.getElementById('report').textContent);document.getElementById('copyStatus').textContent='Report copied.'}catch(e){document.getElementById('copyStatus').textContent='Select and copy the report manually.'}};
+window.addEventListener('pagehide',()=>{stopDevices();clearClip()});
+run().catch(e=>{document.getElementById('summary').textContent=err(e);updateReport();document.title='COMPAT-FAIL'});
+</script>
+</body>
+</html>

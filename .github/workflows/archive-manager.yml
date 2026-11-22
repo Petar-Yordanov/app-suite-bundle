@@ -1,0 +1,227 @@
+name: Build Arky
+
+on:
+  push:
+    paths:
+      - 'Arky/**'
+      - '.github/workflows/archive-manager.yml'
+      - 'tools/publish_release.py'
+  pull_request:
+    paths:
+      - 'Arky/**'
+      - '.github/workflows/archive-manager.yml'
+      - 'tools/publish_release.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Arky-${{ matrix.os }}-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows, arch: x64,   runner: windows-2022, xmake_platform: windows, xmake_arch: x64,    qt_host: windows, qt_arch: win64_msvc2022_64 }
+          - { os: linux,   arch: x64,   runner: ubuntu-24.04, xmake_platform: linux,   xmake_arch: x86_64, qt_host: linux,   qt_arch: linux_gcc_64 }
+          - { os: macos,   arch: arm64, runner: macos-15,     xmake_platform: macosx,  xmake_arch: arm64,  qt_host: mac,     qt_arch: clang_64 }
+
+    env:
+      QT_VERSION: '6.8.3'
+      APP_VERSION: '1.0.0'
+      PORTABLE: '0'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libxrandr-dev libxfixes-dev libgl-dev libegl-dev libxcb-cursor0 libxkbcommon-x11-0 patchelf xvfb xauth nasm
+
+      - name: Set up Xmake
+        uses: xmake-io/github-action-setup-xmake@v1
+        with:
+          xmake-version: '3.1.1'
+
+      - name: Install Qt SDK
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: ${{ matrix.qt_host }}
+          target: desktop
+          arch: ${{ matrix.qt_arch }}
+          modules: qtimageformats
+          cache: true
+
+      - name: Locate Arky project
+        id: arky_project
+        shell: bash
+        run: |
+          for dir in Arky ArchiveManager; do
+            if [[ -f "$dir/xmake.lua" && -f "$dir/src/core/archive_engine.cpp" ]]; then
+              printf 'directory=%s\n' "$dir" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          echo '::error::Arky project not found. Extract Arky.zip at repository root.'
+          exit 1
+
+      - name: Build Arky (Windows MSVC)
+        if: runner.os == 'Windows'
+        working-directory: ${{ steps.arky_project.outputs.directory }}
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          xmake f -c -y -P . -F xmake.lua -p windows -a x64 -m release --vs=2022 "--qt=$env:QT_ROOT_DIR"
+          xmake build -y Arky
+          xmake build -y arky-cli
+          xmake build -y archive_tests
+          xmake build -y mime_tests
+          xmake build -y transfer_plan_tests
+
+      - name: Build Arky (Linux/macOS)
+        if: runner.os != 'Windows'
+        working-directory: ${{ steps.arky_project.outputs.directory }}
+        shell: bash
+        run: |
+          xmake f -c -y -P . -F xmake.lua -p "${{ matrix.xmake_platform }}" -a "${{ matrix.xmake_arch }}" -m release --qt="$QT_ROOT_DIR"
+          xmake build -y Arky
+          xmake build -y arky-cli
+          xmake build -y archive_tests
+          xmake build -y mime_tests
+          xmake build -y transfer_plan_tests
+
+      - name: Arky core and CLI tests
+        if: runner.os != 'Windows'
+        working-directory: ${{ steps.arky_project.outputs.directory }}
+        shell: bash
+        run: |
+          xmake run archive_tests "$PWD/tests/fixtures/password.zip"
+          xmake run transfer_plan_tests
+          xmake run arky-cli --help
+          smoke="$(mktemp -d)"
+          xmake run arky-cli create "$smoke/sample.zip" "$PWD/tests/fixtures/password.txt"
+          xmake run arky-cli list "$smoke/sample.zip"
+          xmake run arky-cli extract "$smoke/sample.zip" "$smoke/output"
+          cmp "$PWD/tests/fixtures/password.txt" "$smoke/output/password.txt"
+
+      - name: Arky core and CLI tests (Windows)
+        if: runner.os == 'Windows'
+        working-directory: ${{ steps.arky_project.outputs.directory }}
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          xmake run archive_tests "$PWD/tests/fixtures/password.zip"
+          xmake run transfer_plan_tests
+          xmake run arky-cli --help
+          $smoke = Join-Path $env:RUNNER_TEMP ("arky-" + [guid]::NewGuid())
+          New-Item -ItemType Directory $smoke | Out-Null
+          xmake run arky-cli create "$smoke/sample.zip" "$PWD/tests/fixtures/password.txt"
+          xmake run arky-cli list "$smoke/sample.zip"
+          xmake run arky-cli extract "$smoke/sample.zip" "$smoke/output"
+          if ((Get-FileHash "$PWD/tests/fixtures/password.txt").Hash -ne (Get-FileHash "$smoke/output/password.txt").Hash) { throw "CLI extraction mismatch" }
+
+      - name: Arky UI and MIME regression tests (Linux)
+        if: runner.os == 'Linux'
+        working-directory: ${{ steps.arky_project.outputs.directory }}
+        shell: bash
+        env:
+          QT_QPA_PLATFORM: xcb
+          QT_QUICK_BACKEND: software
+        run: |
+          xvfb-run -a xmake run mime_tests
+          xvfb-run -a xmake run Arky --smoke-test
+
+      - name: Arky UI and MIME regression tests (macOS)
+        if: runner.os == 'macOS'
+        working-directory: ${{ steps.arky_project.outputs.directory }}
+        shell: bash
+        env:
+          QT_QUICK_BACKEND: software
+        run: |
+          xmake run mime_tests
+          xmake run Arky --smoke-test
+
+      - name: Arky UI and MIME regression tests (Windows)
+        if: runner.os == 'Windows'
+        working-directory: ${{ steps.arky_project.outputs.directory }}
+        shell: pwsh
+        env:
+          QT_QUICK_BACKEND: software
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          xmake run mime_tests
+          xmake run Arky --smoke-test
+
+      - name: Build Arky Windows installer
+        if: runner.os == 'Windows'
+        working-directory: ${{ steps.arky_project.outputs.directory }}
+        shell: pwsh
+        run: ./Packaging/package-windows.ps1
+
+      - name: Build Arky macOS installer
+        if: runner.os == 'macOS'
+        working-directory: ${{ steps.arky_project.outputs.directory }}
+        shell: bash
+        run: bash Packaging/package-macos.sh
+
+      - name: Build Arky Linux installer
+        if: runner.os == 'Linux'
+        working-directory: ${{ steps.arky_project.outputs.directory }}
+        shell: bash
+        run: bash Packaging/package-linux.sh
+
+      - name: Upload Arky Windows installer
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v7
+        with:
+          path: ${{ steps.arky_project.outputs.directory }}/artifacts/Arky-windows-x64-setup.exe
+          archive: false
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload Arky macOS installer
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v7
+        with:
+          path: ${{ steps.arky_project.outputs.directory }}/artifacts/Arky-macos-arm64.pkg
+          archive: false
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload Arky Linux installer
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v7
+        with:
+          path: ${{ steps.arky_project.outputs.directory }}/artifacts/Arky-linux-x64.deb
+          archive: false
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish latest Arky installers
+    needs: build
+    if: ${{ github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v8
+        with:
+          path: release-installers
+          merge-multiple: true
+      - name: Publish verified release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/publish_release.py release-installers Arky-windows-x64-setup.exe Arky-linux-x64.deb Arky-macos-arm64.pkg

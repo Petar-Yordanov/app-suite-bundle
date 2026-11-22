@@ -1,5 +1,7 @@
 # Screenshot Tool
 
+**Local builds:** See [the App Suite build guide](../LOCAL-BUILD.md) for the auto-detecting SDK bootstrap and direct Xmake commands.
+
 A clipboard-first C++20 / Qt 6 / QML desktop screenshot utility. No accounts, telemetry, editing, annotation, or automatic image file saving.
 
 ## Usage

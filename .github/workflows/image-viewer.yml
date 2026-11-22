@@ -1,0 +1,195 @@
+name: Build ImageViewer
+
+on:
+  push:
+    paths:
+      - 'ImageViewer/**'
+      - '.github/workflows/image-viewer.yml'
+      - 'tools/publish_release.py'
+  pull_request:
+    paths:
+      - 'ImageViewer/**'
+      - '.github/workflows/image-viewer.yml'
+      - 'tools/publish_release.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ImageViewer-${{ matrix.os }}-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows, arch: x64,   runner: windows-2022, xmake_platform: windows, xmake_arch: x64,    qt_host: windows, qt_arch: win64_msvc2022_64 }
+          - { os: linux,   arch: x64,   runner: ubuntu-24.04, xmake_platform: linux,   xmake_arch: x86_64, qt_host: linux,   qt_arch: linux_gcc_64 }
+          - { os: macos,   arch: arm64, runner: macos-15,     xmake_platform: macosx,  xmake_arch: arm64,  qt_host: mac,     qt_arch: clang_64 }
+
+    env:
+      QT_VERSION: '6.8.3'
+      APP_VERSION: '1.0.0'
+      PORTABLE: '0'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libxrandr-dev libxfixes-dev libgl-dev libegl-dev libxcb-cursor0 libxkbcommon-x11-0 patchelf xvfb xauth nasm
+
+      - name: Set up Xmake
+        uses: xmake-io/github-action-setup-xmake@v1
+        with:
+          xmake-version: '3.1.1'
+
+      - name: Install Qt SDK
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: ${{ matrix.qt_host }}
+          target: desktop
+          arch: ${{ matrix.qt_arch }}
+          modules: qtimageformats
+          cache: true
+
+      - name: Locate ImageViewer project
+        id: imageviewer_project
+        shell: bash
+        run: |
+          for dir in ImageViewer ImageViewer/ImageViewer; do
+            if [[ -f "$dir/xmake.lua" && -f "$dir/App/main.cpp" && -f "$dir/Core/Decoder.cpp" && -f "$dir/UI/Main.qml" && -f "$dir/Tests/IntegrationTests.cpp" ]] &&
+               grep -Fq 'target("imageviewer")' "$dir/xmake.lua"; then
+              printf 'directory=%s\n' "$dir" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          echo '::error::ImageViewer project not found. Extract ImageViewer.zip at the repository root, preserving its directories.'
+          exit 1
+
+      - name: Configure and build ImageViewer (Windows MSVC)
+        if: runner.os == 'Windows'
+        working-directory: ${{ steps.imageviewer_project.outputs.directory }}
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          xmake f -c -y -P . -F xmake.lua -p windows -a x64 -m release --vs=2022 "--qt=$env:QT_ROOT_DIR"
+          xmake build -y imageviewer
+          xmake build -y imageviewer-metadata-tests
+          xmake build -y imageviewer-tests
+          xmake build -y imageviewer-bench
+
+      - name: Configure and build ImageViewer (Linux/macOS Release)
+        if: runner.os != 'Windows'
+        working-directory: ${{ steps.imageviewer_project.outputs.directory }}
+        shell: bash
+        run: |
+          xmake f -c -y -P . -F xmake.lua -p "${{ matrix.xmake_platform }}" -a "${{ matrix.xmake_arch }}" -m release --qt="$QT_ROOT_DIR"
+          xmake build -y imageviewer
+          xmake build -y imageviewer-metadata-tests
+          xmake build -y imageviewer-tests
+          xmake build -y imageviewer-bench
+
+      - name: Run ImageViewer metadata tests
+        working-directory: ${{ steps.imageviewer_project.outputs.directory }}
+        run: xmake run imageviewer-metadata-tests
+
+      - name: Run ImageViewer integration tests (Linux X11)
+        if: runner.os == 'Linux'
+        working-directory: ${{ steps.imageviewer_project.outputs.directory }}
+        env:
+          QT_QPA_PLATFORM: xcb
+          QT_QUICK_BACKEND: software
+        run: xvfb-run -a xmake run imageviewer-tests
+
+      - name: Run ImageViewer integration tests (Windows/macOS)
+        if: runner.os != 'Linux'
+        working-directory: ${{ steps.imageviewer_project.outputs.directory }}
+        env:
+          QT_QUICK_BACKEND: software
+        run: xmake run imageviewer-tests
+
+      - name: Run ImageViewer benchmark (Linux)
+        if: runner.os == 'Linux'
+        working-directory: ${{ steps.imageviewer_project.outputs.directory }}
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: xmake run imageviewer-bench
+
+      - name: Run ImageViewer benchmark (Windows/macOS)
+        if: runner.os != 'Linux'
+        working-directory: ${{ steps.imageviewer_project.outputs.directory }}
+        run: xmake run imageviewer-bench
+
+      - name: Build ImageViewer Windows installer (Inno Setup)
+        if: runner.os == 'Windows'
+        working-directory: ${{ steps.imageviewer_project.outputs.directory }}
+        shell: pwsh
+        run: ./Packaging/package-windows.ps1
+
+      - name: Build ImageViewer macOS installer (productbuild)
+        if: runner.os == 'macOS'
+        working-directory: ${{ steps.imageviewer_project.outputs.directory }}
+        shell: bash
+        run: bash Packaging/package-macos.sh
+
+      - name: Build ImageViewer Linux installer (Debian package)
+        if: runner.os == 'Linux'
+        working-directory: ${{ steps.imageviewer_project.outputs.directory }}
+        shell: bash
+        run: bash Packaging/package-linux.sh
+
+      - name: Upload ImageViewer Windows installer
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v7
+        with:
+          path: ${{ steps.imageviewer_project.outputs.directory }}/artifacts/ImageViewer-windows-x64-setup.exe
+          archive: false
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload ImageViewer macOS installer
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v7
+        with:
+          path: ${{ steps.imageviewer_project.outputs.directory }}/artifacts/ImageViewer-macos-arm64.pkg
+          archive: false
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload ImageViewer Linux installer
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v7
+        with:
+          path: ${{ steps.imageviewer_project.outputs.directory }}/artifacts/ImageViewer-linux-x64.deb
+          archive: false
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish latest ImageViewer installers
+    needs: build
+    if: ${{ github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v8
+        with:
+          path: release-installers
+          merge-multiple: true
+      - name: Publish verified release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/publish_release.py release-installers ImageViewer-windows-x64-setup.exe ImageViewer-linux-x64.deb ImageViewer-macos-arm64.pkg

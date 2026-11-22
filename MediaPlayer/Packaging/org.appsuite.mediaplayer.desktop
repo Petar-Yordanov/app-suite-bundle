@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Media Player
+Comment=Lightweight local video player
+Exec=mediaplayer %F
+Icon=video-x-generic
+Terminal=false
+Categories=AudioVideo;Video;Player;
+MimeType=video/mp4;video/mpeg;video/x-matroska;video/webm;video/quicktime;video/x-msvideo;video/x-ms-wmv;video/x-ms-asf;video/x-flv;video/x-f4v;video/ogg;video/mp2t;video/3gpp;video/3gpp2;video/x-m4v;video/x-dv;video/x-ms-wtv;video/x-mjpeg;video/x-mpeg2;video/vnd.rn-realvideo;video/x-theora;video/x-ogm+ogg;video/x-nsv;application/mxf;

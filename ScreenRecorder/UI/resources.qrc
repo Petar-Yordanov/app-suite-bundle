@@ -1,0 +1,5 @@
+<RCC><qresource prefix="/">
+  <file>Main.qml</file>
+  <file>Region.qml</file>
+  <file>PortalRegion.qml</file>
+</qresource></RCC>

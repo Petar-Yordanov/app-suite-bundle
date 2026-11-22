@@ -1,0 +1,195 @@
+name: Build ScreenshotTool
+
+on:
+  push:
+    paths:
+      - 'ScreenshotTool/**'
+      - '.github/workflows/screenshot-tool.yml'
+      - 'tools/publish_release.py'
+  pull_request:
+    paths:
+      - 'ScreenshotTool/**'
+      - '.github/workflows/screenshot-tool.yml'
+      - 'tools/publish_release.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ScreenshotTool-${{ matrix.os }}-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows, arch: x64,   runner: windows-2022, xmake_platform: windows, xmake_arch: x64,    qt_host: windows, qt_arch: win64_msvc2022_64 }
+          - { os: linux,   arch: x64,   runner: ubuntu-24.04, xmake_platform: linux,   xmake_arch: x86_64, qt_host: linux,   qt_arch: linux_gcc_64 }
+          - { os: macos,   arch: arm64, runner: macos-15,     xmake_platform: macosx,  xmake_arch: arm64,  qt_host: mac,     qt_arch: clang_64 }
+
+    env:
+      QT_VERSION: '6.8.3'
+      APP_VERSION: '1.0.0'
+      PORTABLE: '0'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libxrandr-dev libxfixes-dev libgl-dev libegl-dev libxcb-cursor0 libxkbcommon-x11-0 patchelf xvfb xauth nasm
+
+      - name: Set up Xmake
+        uses: xmake-io/github-action-setup-xmake@v1
+        with:
+          xmake-version: '3.1.1'
+
+      - name: Install Qt SDK
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: ${{ matrix.qt_host }}
+          target: desktop
+          arch: ${{ matrix.qt_arch }}
+          modules: qtimageformats
+          cache: true
+
+      - name: Locate ScreenshotTool project
+        id: screenshot_project
+        shell: bash
+        run: |
+          for dir in ScreenshotTool ScreenshotTool/ScreenshotTool; do
+            if [[ -f "$dir/xmake.lua" && -f "$dir/App/main.cpp" && -f "$dir/UI/Overlay.qml" && -f "$dir/Tests/Tests.cpp" ]]; then
+              printf 'directory=%s\n' "$dir" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          echo '::error::ScreenshotTool project not found. Extract ScreenshotTool.zip at the repository root, preserving paths.'
+          exit 1
+
+      - name: Build ScreenshotTool (Windows)
+        if: runner.os == 'Windows'
+        working-directory: ${{ steps.screenshot_project.outputs.directory }}
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          xmake f -c -y -P . -F xmake.lua -p windows -a x64 -m release --vs=2022 "--qt=$env:QT_ROOT_DIR"
+          xmake build -y screenshottool
+          xmake build -y screenshottool-geometry-tests
+          xmake build -y screenshottool-tests
+          xmake build -y screenshottool-bench
+
+      - name: Build ScreenshotTool (Linux/macOS)
+        if: runner.os != 'Windows'
+        working-directory: ${{ steps.screenshot_project.outputs.directory }}
+        shell: bash
+        run: |
+          xmake f -c -y -P . -F xmake.lua -p "${{ matrix.xmake_platform }}" -a "${{ matrix.xmake_arch }}" -m release --qt="$QT_ROOT_DIR"
+          xmake build -y screenshottool
+          xmake build -y screenshottool-geometry-tests
+          xmake build -y screenshottool-tests
+          xmake build -y screenshottool-bench
+
+      - name: Run ScreenshotTool geometry tests
+        working-directory: ${{ steps.screenshot_project.outputs.directory }}
+        run: xmake run screenshottool-geometry-tests
+
+      - name: Run ScreenshotTool integration tests (Linux X11)
+        if: runner.os == 'Linux'
+        working-directory: ${{ steps.screenshot_project.outputs.directory }}
+        env:
+          QT_QPA_PLATFORM: xcb
+          QT_QUICK_BACKEND: software
+          SCREENSHOT_NATIVE_TEST: '1'
+        run: xvfb-run -a xmake run screenshottool-tests
+
+      - name: Run ScreenshotTool integration tests (Windows/macOS)
+        if: runner.os != 'Linux'
+        working-directory: ${{ steps.screenshot_project.outputs.directory }}
+        env:
+          QT_QUICK_BACKEND: software
+        run: xmake run screenshottool-tests
+
+      - name: Run ScreenshotTool benchmarks (Linux)
+        if: runner.os == 'Linux'
+        working-directory: ${{ steps.screenshot_project.outputs.directory }}
+        env:
+          QT_QPA_PLATFORM: xcb
+        run: xvfb-run -a xmake run screenshottool-bench --capture
+
+      - name: Run ScreenshotTool benchmarks (Windows/macOS)
+        if: runner.os != 'Linux'
+        working-directory: ${{ steps.screenshot_project.outputs.directory }}
+        run: xmake run screenshottool-bench
+
+      - name: Build ScreenshotTool Windows installer
+        if: runner.os == 'Windows'
+        working-directory: ${{ steps.screenshot_project.outputs.directory }}
+        shell: pwsh
+        run: ./Packaging/package-windows.ps1
+
+      - name: Build ScreenshotTool macOS installer
+        if: runner.os == 'macOS'
+        working-directory: ${{ steps.screenshot_project.outputs.directory }}
+        shell: bash
+        run: bash Packaging/package-macos.sh
+
+      - name: Build ScreenshotTool Linux installer
+        if: runner.os == 'Linux'
+        working-directory: ${{ steps.screenshot_project.outputs.directory }}
+        shell: bash
+        run: bash Packaging/package-linux.sh
+
+      - name: Upload ScreenshotTool Windows installer
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v7
+        with:
+          path: ${{ steps.screenshot_project.outputs.directory }}/artifacts/ScreenshotTool-windows-x64-setup.exe
+          archive: false
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload ScreenshotTool macOS installer
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v7
+        with:
+          path: ${{ steps.screenshot_project.outputs.directory }}/artifacts/ScreenshotTool-macos-arm64.pkg
+          archive: false
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload ScreenshotTool Linux installer
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v7
+        with:
+          path: ${{ steps.screenshot_project.outputs.directory }}/artifacts/ScreenshotTool-linux-x64.deb
+          archive: false
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish latest ScreenshotTool installers
+    needs: build
+    if: ${{ github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v8
+        with:
+          path: release-installers
+          merge-multiple: true
+      - name: Publish verified release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/publish_release.py release-installers ScreenshotTool-windows-x64-setup.exe ScreenshotTool-linux-x64.deb ScreenshotTool-macos-arm64.pkg

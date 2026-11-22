@@ -1,0 +1,134 @@
+name: Build WebBrowser
+
+on:
+  push:
+    paths:
+      - 'WebBrowser/**'
+      - '.github/workflows/web-browser.yml'
+      - 'tools/publish_release.py'
+  pull_request:
+    paths:
+      - 'WebBrowser/**'
+      - '.github/workflows/web-browser.yml'
+      - 'tools/publish_release.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: WebBrowser-${{ matrix.os }}-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows, arch: x64, runner: windows-2022, platform: windows, xmake_arch: x64, qt_host: windows, qt_arch: win64_msvc2022_64 }
+          - { os: linux, arch: x64, runner: ubuntu-24.04, platform: linux, xmake_arch: x86_64, qt_host: linux, qt_arch: linux_gcc_64 }
+          - { os: macos, arch: arm64, runner: macos-15, platform: macosx, xmake_arch: arm64, qt_host: mac, qt_arch: clang_64 }
+    env:
+      QT_VERSION: '6.11.3'
+      APP_VERSION: '1.0.0'
+      PORTABLE: '0'
+    defaults:
+      run:
+        working-directory: WebBrowser
+    steps:
+      - uses: actions/checkout@v4
+      - uses: xmake-io/github-action-setup-xmake@v1
+        with:
+          xmake-version: '3.1.1'
+      - name: Install Qt WebEngine
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: ${{ matrix.qt_host }}
+          target: desktop
+          arch: ${{ matrix.qt_arch }}
+          modules: qtwebengine qtwebchannel qtpositioning
+          cache: true
+      - name: Linux browser dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y patchelf xvfb xauth libgl-dev libegl-dev libxcb-cursor0 libxkbcommon-x11-0 libnss3 libnspr4 libasound2t64 libgbm1 libxcomposite1 libxdamage1 libatk1.0-0t64 libatk-bridge2.0-0t64 libxshmfence1 libxrandr2 libxss1 libopengl0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0 libxcb-randr0
+      - name: Build and test Browser (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          xmake f -c -y -p windows -a x64 -m release --vs=2022 "--qt=$env:QT_ROOT_DIR"
+          xmake build -y webbrowser
+          xmake build -y webbrowser-tests
+          xmake build -y webbrowser-store-tests
+          xmake build -y webbrowser-bench
+          xmake run webbrowser-tests
+          xmake run webbrowser-store-tests
+          xmake run webbrowser-bench
+          ./Packaging/package-windows.ps1
+      - name: Build and test Browser (Linux/macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          xmake f -c -y -p "${{ matrix.platform }}" -a "${{ matrix.xmake_arch }}" -m release --qt="$QT_ROOT_DIR"
+          xmake build -y webbrowser
+          xmake build -y webbrowser-tests
+          xmake build -y webbrowser-store-tests
+          xmake build -y webbrowser-bench
+          xmake run webbrowser-tests
+          xmake run webbrowser-store-tests
+          xmake run webbrowser-bench
+      - name: Package and smoke-test Linux
+        if: runner.os == 'Linux'
+        shell: bash
+        run: bash Packaging/package-linux.sh
+      - name: Package and smoke-test macOS
+        if: runner.os == 'macOS'
+        shell: bash
+        run: bash Packaging/package-macos.sh
+      - uses: actions/upload-artifact@v7
+        if: runner.os == 'Windows'
+        with:
+          path: WebBrowser/artifacts/WebBrowser-windows-x64-setup.exe
+          archive: false
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@v7
+        if: runner.os == 'Linux'
+        with:
+          path: WebBrowser/artifacts/WebBrowser-linux-x64.deb
+          archive: false
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@v7
+        if: runner.os == 'macOS'
+        with:
+          path: WebBrowser/artifacts/WebBrowser-macos-arm64.pkg
+          archive: false
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish latest WebBrowser installers
+    needs: build
+    if: ${{ github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v8
+        with:
+          path: release-installers
+          merge-multiple: true
+      - name: Publish verified release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/publish_release.py release-installers WebBrowser-windows-x64-setup.exe WebBrowser-linux-x64.deb WebBrowser-macos-arm64.pkg

@@ -1,0 +1,205 @@
+name: Build ScreenRecorder
+
+on:
+  push:
+    paths:
+      - 'ScreenRecorder/**'
+      - '.github/workflows/screen-recorder.yml'
+      - 'tools/publish_release.py'
+  pull_request:
+    paths:
+      - 'ScreenRecorder/**'
+      - '.github/workflows/screen-recorder.yml'
+      - 'tools/publish_release.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ScreenRecorder-${{ matrix.os }}-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows, arch: x64,   runner: windows-2022, xmake_platform: windows, xmake_arch: x64,    qt_host: windows, qt_arch: win64_msvc2022_64 }
+          - { os: linux,   arch: x64,   runner: ubuntu-24.04, xmake_platform: linux,   xmake_arch: x86_64, qt_host: linux,   qt_arch: linux_gcc_64 }
+          - { os: macos,   arch: arm64, runner: macos-15,     xmake_platform: macosx,  xmake_arch: arm64,  qt_host: mac,     qt_arch: clang_64 }
+
+    env:
+      QT_VERSION: '6.8.3'
+      APP_VERSION: '1.0.0'
+      PORTABLE: '0'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libxrandr-dev libxfixes-dev libgl-dev libegl-dev libxcb-cursor0 libxkbcommon-x11-0 patchelf xvfb xauth nasm
+
+      - name: Set up Xmake
+        uses: xmake-io/github-action-setup-xmake@v1
+        with:
+          xmake-version: '3.1.1'
+
+      - name: Install Qt SDK
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: ${{ matrix.qt_host }}
+          target: desktop
+          arch: ${{ matrix.qt_arch }}
+          modules: qtimageformats
+          cache: true
+
+      - name: Locate Screen Recorder project
+        id: recorder_project
+        shell: bash
+        run: |
+          for dir in ScreenRecorder ScreenRecorder/ScreenRecorder; do
+            if [[ -f "$dir/xmake.lua" && -f "$dir/App/Recorder.cpp" ]]; then
+              printf 'directory=%s\n' "$dir" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          echo '::error::Extract ScreenRecorder.zip at the repository root.'
+          exit 1
+
+      - name: Install recording dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg pulseaudio-utils pkg-config libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-base gstreamer1.0-pipewire xdg-desktop-portal
+          ffmpeg -version
+
+      - name: Install recording dependencies (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          if ! command -v ffmpeg >/dev/null; then brew install ffmpeg; fi
+          ffmpeg -version
+
+      - name: Install recording dependencies (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          choco install ffmpeg -y --no-progress
+          $candidate = Get-ChildItem "$env:ChocolateyInstall/lib/ffmpeg/tools" -Recurse -File -Filter ffmpeg.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($candidate) {
+              "FFMPEG_BINARY=$($candidate.FullName)" >> $env:GITHUB_ENV
+              $candidate.DirectoryName >> $env:GITHUB_PATH
+              & $candidate.FullName -version
+          } else {
+              ffmpeg -version
+          }
+
+      - name: Build Screen Recorder (Windows MSVC)
+        if: runner.os == 'Windows'
+        working-directory: ${{ steps.recorder_project.outputs.directory }}
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          xmake f -c -y -p windows -a x64 -m release --vs=2022 "--qt=$env:QT_ROOT_DIR"
+          xmake build -y screenrecorder
+          xmake build -y screenrecorder-tests
+          xmake build -y screenrecorder-media-tests
+          xmake run screenrecorder-tests
+          xmake run screenrecorder-media-tests
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          $env:QT_QUICK_BACKEND = 'software'
+          xmake run screenrecorder --smoke-test
+
+      - name: Build Screen Recorder (Linux/macOS)
+        if: runner.os != 'Windows'
+        working-directory: ${{ steps.recorder_project.outputs.directory }}
+        shell: bash
+        run: |
+          xmake f -c -y -p "${{ matrix.xmake_platform }}" -a "${{ matrix.xmake_arch }}" -m release --qt="$QT_ROOT_DIR"
+          xmake build -y screenrecorder
+          xmake build -y screenrecorder-tests
+          xmake build -y screenrecorder-media-tests
+          xmake run screenrecorder-tests
+          xmake run screenrecorder-media-tests
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            xvfb-run -a env QT_QUICK_BACKEND=software xmake run screenrecorder --smoke-test
+            xvfb-run -a -s "-screen 0 1024x768x24" env QT_QUICK_BACKEND=software xmake run screenrecorder --capture-smoke
+            python3 Tests/raw_transport.py
+          else
+            QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software xmake run screenrecorder --smoke-test
+            python3 Tests/raw_transport.py
+          fi
+
+      - name: Build Screen Recorder Windows installer
+        if: runner.os == 'Windows'
+        working-directory: ${{ steps.recorder_project.outputs.directory }}
+        shell: pwsh
+        run: ./Packaging/package-windows.ps1
+
+      - name: Build Screen Recorder macOS installer
+        if: runner.os == 'macOS'
+        working-directory: ${{ steps.recorder_project.outputs.directory }}
+        shell: bash
+        run: bash Packaging/package-macos.sh
+
+      - name: Build Screen Recorder Linux installer
+        if: runner.os == 'Linux'
+        working-directory: ${{ steps.recorder_project.outputs.directory }}
+        shell: bash
+        run: bash Packaging/package-linux.sh
+
+      - name: Upload Screen Recorder Windows installer
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v7
+        with:
+          path: ${{ steps.recorder_project.outputs.directory }}/artifacts/ScreenRecorder-windows-x64-setup.exe
+          archive: false
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload Screen Recorder macOS installer
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v7
+        with:
+          path: ${{ steps.recorder_project.outputs.directory }}/artifacts/ScreenRecorder-macos-arm64.pkg
+          archive: false
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload Screen Recorder Linux installer
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v7
+        with:
+          path: ${{ steps.recorder_project.outputs.directory }}/artifacts/ScreenRecorder-linux-x64.deb
+          archive: false
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish latest ScreenRecorder installers
+    needs: build
+    if: ${{ github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v8
+        with:
+          path: release-installers
+          merge-multiple: true
+      - name: Publish verified release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/publish_release.py release-installers ScreenRecorder-windows-x64-setup.exe ScreenRecorder-linux-x64.deb ScreenRecorder-macos-arm64.pkg

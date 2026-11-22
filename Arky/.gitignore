@@ -1,0 +1,14 @@
+/build/
+/.xmake/
+/.cache/
+*.arky-part-*
+*.user
+*.exe
+*.obj
+*.o
+*.pdb
+*.ilk
+*.dll
+!xmake-requires.lock
+
+/.verification/

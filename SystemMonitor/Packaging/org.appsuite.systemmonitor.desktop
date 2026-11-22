@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=System Monitor
+Comment=Native system monitor
+Exec=systemmonitor
+Terminal=false
+Type=Application
+Categories=System;Monitor;

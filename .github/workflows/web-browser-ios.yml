@@ -1,0 +1,80 @@
+name: Build WebBrowser iOS
+
+on:
+  push:
+    paths:
+      - 'WebBrowser/**'
+      - '.github/workflows/web-browser-ios.yml'
+      - 'tools/publish_release.py'
+  pull_request:
+    paths:
+      - 'WebBrowser/**'
+      - '.github/workflows/web-browser-ios.yml'
+      - 'tools/publish_release.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: WebBrowser-iOS-simulator-arm64
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: xmake-io/github-action-setup-xmake@v1
+        with:
+          xmake-version: '3.1.1'
+      - name: Install Qt iOS SDK and host tools
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.11.3'
+          host: mac
+          target: ios
+          arch: ios
+          cache: true
+          extra: '--autodesktop'
+      - name: Select Xcode
+        shell: bash
+        run: |
+          xc="$(find /Applications -maxdepth 1 -name 'Xcode_26*.app' | sort | tail -1)"
+          if [[ -n "$xc" ]]; then sudo xcode-select -s "$xc/Contents/Developer"; fi
+          xcodebuild -version
+      - name: Build unsigned simulator app
+        working-directory: WebBrowser
+        run: |
+          xmake ios-bundle --qt="$QT_ROOT_DIR"
+          app="$(find build/ios-simulator -type d -name webbrowser.app -print -quit)"
+          test -n "$app"
+          mkdir -p artifacts
+          ditto -c -k --sequesterRsrc --keepParent "$app" artifacts/WebBrowser-ios-simulator-arm64.zip
+      - uses: actions/upload-artifact@v7
+        with:
+          path: WebBrowser/artifacts/WebBrowser-ios-simulator-arm64.zip
+          archive: false
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish latest WebBrowser iOS installers
+    needs: build
+    if: ${{ github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v8
+        with:
+          path: release-installers
+          merge-multiple: true
+      - name: Publish verified release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/publish_release.py release-installers WebBrowser-ios-simulator-arm64.zip

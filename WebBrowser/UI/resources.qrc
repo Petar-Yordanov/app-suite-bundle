@@ -1,0 +1,5 @@
+<RCC><qresource prefix="/">
+<file>Main.qml</file>
+<file>DesktopPage.qml</file>
+<file>Compatibility.html</file>
+</qresource></RCC>

@@ -1,0 +1,21 @@
+[Desktop Entry]
+Type=Application
+Name=Screen Recorder
+Comment=Record a screen, region or window to MP4
+Exec=screenrecorder --show
+Icon=media-record
+Terminal=false
+Categories=Graphics;Utility;
+Actions=Toggle;Pause;Stop;
+
+[Desktop Action Toggle]
+Name=New or stop recording
+Exec=screenrecorder --toggle
+
+[Desktop Action Pause]
+Name=Pause or resume recording
+Exec=screenrecorder --pause
+
+[Desktop Action Stop]
+Name=Stop recording
+Exec=screenrecorder --stop

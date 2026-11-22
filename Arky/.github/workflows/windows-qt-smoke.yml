@@ -1,0 +1,34 @@
+name: Windows Qt/QML verification
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  windows-msvc:
+    runs-on: windows-2022
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure MSVC x64 toolchain
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Install supported Qt 6 SDK and Qt Quick/QML plugins
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.9.1'
+          target: desktop
+          arch: win64_msvc2022_64
+          cache: true
+      - name: Install Xmake
+        uses: xmake-io/github-action-setup-xmake@v1
+        with:
+          xmake-version: latest
+      - name: Check QML resources and C++ bridge references
+        shell: pwsh
+        run: python scripts/source-check.py
+      - name: Build and run native, MIME and QML smoke tests
+        shell: pwsh
+        run: ./scripts/verify-windows.ps1 -Configuration release -QtSdk $env:QT_ROOT_DIR
