@@ -2,9 +2,10 @@
 #include "../App/Browser.hpp"
 #include "../App/Downloads.hpp"
 #include <QWebEngineUrlRequestInfo>
+#include <QWebEngineCookieStore>
 #include <QTimer>
 void Filter::interceptRequest(QWebEngineUrlRequestInfo& info){
-    auto r=std::atomic_load(&rules);if(r&&r->blocks(info.requestUrl().host().toStdString(),info.firstPartyUrl().host().toStdString(),info.resourceType()==QWebEngineUrlRequestInfo::ResourceTypeMainFrame))info.block(true);
+    auto r=std::atomic_load(&rules);if(r&&r->blocks(info.requestUrl().host().toStdString(),info.firstPartyUrl().host().toStdString(),info.resourceType()==QWebEngineUrlRequestInfo::ResourceTypeMainFrame,info.requestUrl().path(QUrl::FullyEncoded).toStdString()))info.block(true);
 }
 DesktopProfiles::DesktopProfiles(Browser* b,Downloads* d,QObject* p):QObject(p),browser_(b),normal_(new QQuickWebEngineProfile("Default",this)){
     normal_->setPersistentStoragePath(b->dataPath()+"/profile");
@@ -18,6 +19,8 @@ DesktopProfiles::DesktopProfiles(Browser* b,Downloads* d,QObject* p):QObject(p),
     connect(b,&Browser::privateEnded,this,[this,d]{d->clearPrivate();auto old=private_;private_=nullptr;emit privateChanged();if(old)QTimer::singleShot(500,old,&QObject::deleteLater);});
 }
 DesktopProfiles::~DesktopProfiles(){for(auto p:findChildren<QQuickWebEngineProfile*>(QString(),Qt::FindDirectChildrenOnly))delete p;}
+void DesktopProfiles::clearCookies(){normal_->cookieStore()->deleteAllCookies();browser_->notify("Cookie removal requested. Websites may sign you out.");}
+void DesktopProfiles::clearCache(){normal_->clearHttpCache();}
 void DesktopProfiles::configure(){
     auto o=browser_->options();
     if(applied_.isEmpty()||o["adBlock"]!=applied_["adBlock"]||o["adHosts"]!=applied_["adHosts"]||o["adExceptions"]!=applied_["adExceptions"])

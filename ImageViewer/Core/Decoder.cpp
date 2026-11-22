@@ -6,9 +6,12 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QImageIOHandler>
+#include <QPainter>
+#include <QSvgRenderer>
 #include <QSet>
 #include <QTransform>
 #include <libheif/heif.h>
+#include <libheif/heif_sequences.h>
 #include <libraw/libraw.h>
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_NO_STDIO
@@ -18,6 +21,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <vector>
 
 namespace imageview {
 namespace {
@@ -35,6 +39,25 @@ public:
 QString utf(const std::string& s){return QString::fromUtf8(s.data(),qsizetype(s.size()));}
 void mergeMeta(Decoded& out,const Metadata& meta){for(const auto& [k,v]:meta.fields)out.metadata.insert(utf(k),utf(v));}
 bool canDecodeFull(QSize s){return s.isValid()&&s.width()>0&&s.height()>0&&qint64(s.width())*s.height()<=MaxFullPixels&&s.width()<=65536&&s.height()<=65536;}
+bool vectorFormat(const QByteArray& format){return format=="svg"||format=="svgz";}
+bool canReadDetail(QImageReader& reader,const Metadata& meta){
+    if(!reader.size().isValid()||meta.orientation<1||meta.orientation>8)return false;
+    // If Qt knows a rotation not represented in our EXIF metadata, the
+    // mapping is unknown. Never return a tile from the wrong coordinates.
+    if(meta.orientation==1&&reader.transformation()!=QImageIOHandler::TransformationNone)return false;
+    if(reader.supportsAnimation()&&reader.imageCount()!=1)return false;
+    // SVG detail is rendered directly into the viewport-sized output. Other
+    // formats must advertise native clipping; never use Qt's full-read fallback.
+    return (meta.orientation==1&&vectorFormat(reader.format().toLower()))||(canDecodeFull(reader.size())&&reader.supportsOption(QImageIOHandler::ClipRect));
+}
+QPoint inverseOrientation(QPoint p,QSize source,int orientation){
+    const int x=p.x(),y=p.y(),w=source.width()-1,h=source.height()-1;
+    switch(orientation){
+        case 2:return {w-x,y};case 3:return {w-x,h-y};case 4:return {x,h-y};
+        case 5:return {y,x};case 6:return {y,h-x};case 7:return {w-y,h-x};case 8:return {w-y,x};
+        default:return p;
+    }
+}
 QImage orient(QImage image,int o){
     QTransform t;
     switch(o){case 2:return image.mirrored(true,false);case 3:t.rotate(180);break;case 4:return image.mirrored(false,true);
@@ -76,6 +99,9 @@ Decoded qtDecode(const QString& path,bool allowAnimation,const Metadata& meta){
     }
     const auto keys=reader->textKeys();for(const auto& key:keys){if(out.metadata.size()>=64)break;out.metadata.insert(key.left(96),reader->text(key).left(512));}
     const bool animated=reader->supportsAnimation()&&reader->imageCount()!=1;
+    // Use native clipping and an inverse EXIF coordinate mapping, avoiding
+    // a full-resolution output surface for supported readers.
+    out.detailSupported=!animated&&canReadDetail(*reader,meta);
     if(animated)out.metadata.insert("Animated source",true);
     out.image=reader->read();if(out.image.isNull()){out.error=reader->errorString();return out;}
     profile(out.image,meta);
@@ -87,14 +113,64 @@ Decoded qtDecode(const QString& path,bool allowAnimation,const Metadata& meta){
         a->reader=std::move(reader);out.animation=std::move(a);}
     return out;
 }
-Decoded heifDecode(std::span<const std::uint8_t> bytes,const QString& suffix){
+using HeifContext=std::unique_ptr<heif_context,decltype(&heif_context_free)>;
+struct HeifSequence {
+    // Destruction order matters: track, context, then input mapping.
+    std::shared_ptr<Mapping> backing;
+    HeifContext ctx;
+    std::unique_ptr<heif_track,decltype(&heif_track_release)> track;
+    uint32_t timescale=0;
+    QSize resolution;
+    Frame next(){
+        auto* opts=heif_decoding_options_alloc();if(opts)opts->convert_hdr_to_8bit=1;
+        heif_image* raw=nullptr;auto e=heif_track_decode_next_image(track.get(),&raw,heif_colorspace_RGB,heif_chroma_interleaved_RGBA,opts);
+        if(opts)heif_decoding_options_free(opts);
+        if(e.code!=heif_error_Ok||!raw){if(raw)heif_image_release(raw);return {{},0,e.code==heif_error_End_of_sequence?QString():QString::fromUtf8(e.message),true};}
+        int stride=0;auto* plane=heif_image_get_plane_readonly(raw,heif_channel_interleaved,&stride);
+        const int width=heif_image_get_width(raw,heif_channel_interleaved),height=heif_image_get_height(raw,heif_channel_interleaved);
+        if(!plane||QSize(width,height)!=resolution||stride<qint64(width)*4){heif_image_release(raw);return {{},0,"Invalid HEIF sequence frame.",true};}
+        const int delay=timescale?int(std::clamp(1000.0*heif_image_get_duration(raw)/timescale,20.,10000.)):100;
+        QImage image(plane,width,height,stride,QImage::Format_RGBA8888,[](void* p){heif_image_release(static_cast<heif_image*>(p));},raw);
+        auto n=heif_image_get_raw_color_profile_size(raw);
+        if(n>0&&n<=std::size_t(MaxIcc)){QByteArray icc(qsizetype(n),Qt::Uninitialized);if(heif_image_get_raw_color_profile(raw,icc.data()).code==heif_error_Ok){auto cs=QColorSpace::fromIccProfile(icc);if(cs.isValid())image.setColorSpace(cs);}}
+        if(!image.colorSpace().isValid()){
+            heif_color_profile_nclx* profile=nullptr;
+            if(heif_image_get_nclx_color_profile(raw,&profile).code==heif_error_Ok&&profile){
+                if(int(profile->color_primaries)==12&&int(profile->transfer_characteristics)==13)image.setColorSpace(QColorSpace(QColorSpace::DisplayP3));
+                else if(int(profile->color_primaries)==1)image.setColorSpace(QColorSpace(QColorSpace::SRgb));
+                heif_nclx_color_profile_free(profile);
+            }
+        }
+        return {forDisplay(std::move(image)),delay,{},false};
+    }
+};
+Decoded heifDecode(std::shared_ptr<Mapping> backing,const QString& suffix,bool allowAnimation){
+    auto bytes=backing->bytes();
     Decoded out;out.format=suffix=="avif"?"AVIF":"HEIF";
     if(bytes.empty()){out.error="Cannot map image file.";return out;}
-    using Context=std::unique_ptr<heif_context,decltype(&heif_context_free)>;
     using Handle=std::unique_ptr<heif_image_handle,decltype(&heif_image_handle_release)>;
-    Context ctx(heif_context_alloc(),heif_context_free);if(!ctx){out.error="Cannot allocate HEIF decoder.";return out;}
+    HeifContext ctx(heif_context_alloc(),heif_context_free);if(!ctx){out.error="Cannot allocate HEIF decoder.";return out;}
     auto e=heif_context_read_from_memory_without_copy(ctx.get(),bytes.data(),bytes.size(),nullptr);
     if(e.code!=heif_error_Ok){out.error=QString::fromUtf8(e.message);return out;}
+    if(heif_context_has_sequence(ctx.get())){
+        const auto count=heif_context_number_of_sequence_tracks(ctx.get());
+        if(count>0&&count<=64){
+            std::vector<uint32_t> ids(count);heif_context_get_track_ids(ctx.get(),ids.data());
+            for(auto id:ids){
+                std::unique_ptr<heif_track,decltype(&heif_track_release)> track(heif_context_get_track(ctx.get(),id),heif_track_release);
+                if(!track||heif_track_get_track_handler_type(track.get())!=heif_track_type_image_sequence)continue;
+                uint16_t width=0,height=0;auto err=heif_track_get_image_resolution(track.get(),&width,&height);
+                // Bound the per-frame working set more tightly than still images.
+                if(err.code!=heif_error_Ok||width==0||height==0||qint64(width)*height>16*1024*1024)continue;
+                auto timescale=heif_track_get_timescale(track.get());
+                auto seq=std::make_shared<HeifSequence>(HeifSequence{backing,std::move(ctx),std::move(track),timescale,QSize(width,height)});
+                auto frame=seq->next();if(frame.image.isNull()){out.error=frame.error.isEmpty()?QString("HEIF sequence has no decodable frames."):frame.error;return out;}
+                out.image=std::move(frame.image);out.original=seq->resolution;out.reduced=out.image.size()!=out.original;out.metadata.insert("Animated source",true);
+                if(allowAnimation){out.animation=std::make_shared<Animation>();out.animation->delay=frame.delay;out.animation->nativeNext=[seq]{return seq->next();};}
+                return out;
+            }
+        }
+    }
     heif_image_handle* h=nullptr;e=heif_context_get_primary_image_handle(ctx.get(),&h);Handle handle(h,heif_image_handle_release);
     if(e.code!=heif_error_Ok||!h){out.error="Cannot access primary HEIF image.";return out;}
     out.original=QSize(heif_image_handle_get_width(h),heif_image_handle_get_height(h));
@@ -185,12 +261,12 @@ QString fingerprint(const QString& path){QFileInfo info(path);return path+QChar(
 Decoded decode(const QString& path,bool allowAnimation){
     QFileInfo fi(path);Decoded out;if(!fi.isFile()||!fi.isReadable()){out.error="Cannot read this image file.";return out;}
     if(fi.size()>=MaxFile){out.error="Image file exceeds the 2 GiB input limit.";return out;}
-    Mapping map(path);auto bytes=map.bytes();auto metadata=readMetadata(bytes);auto suffix=fi.suffix().toLower();
+    auto map=std::make_shared<Mapping>(path);auto bytes=map->bytes();auto metadata=readMetadata(bytes);auto suffix=fi.suffix().toLower();
     bool psd=bytes.size()>=4&&std::memcmp(bytes.data(),"8BPS",4)==0;
     bool heif=heifExt.contains(suffix);
     if(bytes.size()>=12&&std::memcmp(bytes.data()+4,"ftyp",4)==0){auto type=heif_check_filetype(bytes.data(),int(std::min<std::size_t>(bytes.size(),128)));heif|=type==heif_filetype_yes_supported;}
     if(psd)out=psdDecode(bytes,metadata);
-    else if(heif)out=heifDecode(bytes,suffix);
+    else if(heif)out=heifDecode(map,suffix,allowAnimation);
     else if(rawExt.contains(suffix))out=rawDecode(bytes,suffix);
     else out=qtDecode(path,allowAnimation,metadata);
     if(out.image.isNull()&&!psd&&(heif||rawExt.contains(suffix))){auto fallback=qtDecode(path,allowAnimation,metadata);if(!fallback.image.isNull())out=std::move(fallback);}
@@ -200,7 +276,34 @@ Decoded decode(const QString& path,bool allowAnimation){
     }
     return out;
 }
+QImage decodeDetail(const QString& path,const QRect& region){
+    if(!region.isValid()||region.width()>MaxDetailEdge||region.height()>MaxDetailEdge||qint64(region.width())*region.height()>MaxDetailPixels)return {};
+    QFileInfo file(path);if(!file.isFile()||file.size()>=MaxFile)return {};
+    Mapping mapped(path);auto meta=readMetadata(mapped.bytes());
+    QImageReader reader(path);reader.setDecideFormatFromContent(true);reader.setAutoTransform(false);
+    if(!reader.canRead()||!canReadDetail(reader,meta))return {};
+    auto orientedSize=reader.size();if(meta.orientation>=5)orientedSize.transpose();
+    if(!QRect(QPoint(0,0),orientedSize).contains(region))return {};
+    if(vectorFormat(reader.format().toLower())){
+        QSvgRenderer renderer(path);if(!renderer.isValid()||renderer.animated())return {};
+        QImage tile(region.size(),QImage::Format_ARGB32_Premultiplied);if(tile.isNull())return {};
+        tile.fill(Qt::transparent);QPainter painter(&tile);
+        painter.setRenderHint(QPainter::Antialiasing);painter.translate(-region.topLeft());
+        renderer.render(&painter,QRectF(QPointF(0,0),QSizeF(reader.size())));painter.end();
+        return tile;
+    }
+    auto native=QRect(inverseOrientation(region.topLeft(),reader.size(),meta.orientation),inverseOrientation(region.bottomRight(),reader.size(),meta.orientation)).normalized();
+    if(!QRect(QPoint(0,0),reader.size()).contains(native))return {};
+    reader.setClipRect(native);
+    auto image=reader.read();
+    if(image.size()!=native.size())return {};
+    profile(image,meta);
+    if(meta.orientation!=1)image=orient(std::move(image),meta.orientation);
+    if(image.size()!=region.size())return {};
+    return forDisplay(std::move(image));
+}
 Frame nextFrame(Animation& a){
+    if(a.nativeNext)return a.nativeNext();
     Frame result;
     if(!a.reader)return {{},0,{},true};
     if(!a.reader->canRead()){

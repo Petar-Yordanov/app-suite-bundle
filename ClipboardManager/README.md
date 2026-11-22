@@ -58,6 +58,8 @@ ClipDeck checks clipboard sensitivity markers before saving payloads, including 
 
 No cross-platform clipboard API provides an authenticated, universal identity for the original source application. A password manager or another application may emit content without a detectable marker, or a compositor/clipboard proxy may obscure the original writer. **Exclusion cannot be guaranteed for unmarked clipboard content with an unidentifiable source.** Use password managers that emit sensitive-content hints; if exclusion is essential and the source cannot be detected, pause capture before copying secrets.
 
+Strict password-manager privacy is enabled by default on all platforms for new settings (previous explicit preferences are respected). While a recognizable KeePass or KeePassXC process is running, it skips all new history entries (including copies from other apps). Normal system copying and pasting continues. It checks only on clipboard changes, not by continuously polling the process list. Disabling strict mode retains the per-entry marker and source checks.
+
 | Platform | Limitations |
 | --- | --- |
 | Windows | Source detection uses clipboard owner and foreground process IDs. Clipboard notifications are backed by a 250 ms coarse change-counter poll. Delayed rendering and temporarily locked clipboards receive bounded retries. Explicit history/cloud opt-out flags are excluded; a validated opt-in flag is not itself sensitive content. Native private formats may lack a Qt MIME conversion. |

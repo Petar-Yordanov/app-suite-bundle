@@ -79,17 +79,19 @@ are collected every fifth sample.
 | System and per-core CPU | GetSystemTimes / PDH | Mach host CPU info | /proc/stat |
 | Physical/virtual memory | Windows memory/commit and pagefile APIs | Mach memory, compressed memory, swap; no global commit counter | /proc/meminfo |
 | GPU | WDDM engine and adapter memory PDH, DXGI VRAM capacity, optional NVML | IOAccelerator properties when driver exposes them; shared memory on Apple Silicon | DRM/sysfs, optional NVML |
-| Temperatures | NVIDIA NVML; other sensors unavailable without vendor-specific support | Generic public temperature API unavailable | hwmon; optional NVML |
+| Temperatures | NVIDIA NVML; firmware thermal zones when PDH exposes them | Generic public temperature API unavailable | hwmon; optional NVML |
 | Disk throughput | PDH | IOKit storage driver counters | /proc/diskstats |
 | Network throughput | PDH | route sysctl 64-bit interface counters | /proc/net/dev |
 | Process CPU, RAM and identity | Toolhelp/Win32 | libproc | /proc |
-| Process disk throughput | Unavailable without ETW attribution | proc_pid_rusage | /proc/PID/io when permitted |
-| Process network throughput | Not implemented: requires ETW attribution | Not implemented: no public libproc byte counters | Not implemented: requires eBPF/kernel traffic attribution |
+| Process disk throughput | Optional ETW estimates through issuing-thread attribution | proc_pid_rusage | /proc/PID/io when permitted |
+| Process network throughput | Optional ETW TCP/UDP estimates | Optional nettop TCP/UDP summaries | Optional TCP socket estimates via inet_diag |
 | CPU affinity | Single processor group | Unsupported | sched_setaffinity |
 | Startup management | Run registry keys and Startup folders | LaunchAgents | XDG autostart desktop entries |
 | Services | SCM start/stop | launchctl third-party jobs; Apple system jobs read-only | systemd start/stop |
 
 Additional details:
+
+- Per-process traffic sampling is opt-in to avoid unnecessary overhead. Windows ETW may need administrator access; the session is bounded and is stopped on disable/exit. Lost buffers, unrecognized schemas and exhausted sampling budgets suppress affected rates. Short-lived processes, thread reuse and delivery delays can affect attribution. Firmware thermal zone temperatures are not necessarily CPU/GPU temperatures. macOS nettop and Linux socket estimates also have permission and attribution limits.
 
 - Windows protected processes and other users' processes may hide paths, memory
   or command lines. Windows private commit and macOS virtual address-space size

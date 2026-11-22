@@ -3,6 +3,7 @@
 #include <QAbstractNativeEventFilter>
 #include <QCoreApplication>
 #include <QDir>
+#include <QDirIterator>
 #include <QFile>
 #include <QFileInfo>
 #include <QGuiApplication>
@@ -18,6 +19,7 @@
 #if defined(Q_OS_WIN)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <tlhelp32.h>
 #elif defined(Q_OS_LINUX)
 #include <X11/Xlib.h>
 #include <X11/keysym.h>
@@ -91,6 +93,34 @@ QString desktopExec(QString s){s.replace("\\","\\\\");s.replace("\"","\\\"");s.r
 }
 
 #if !defined(Q_OS_MACOS)
+struct ClipboardWatcher::Impl {
+    std::function<void()> callback;
+#if defined(Q_OS_WIN)
+    HWND window=nullptr;
+    static LRESULT CALLBACK procedure(HWND hwnd,UINT message,WPARAM w,LPARAM l){
+        if(message==WM_NCCREATE){auto* create=reinterpret_cast<CREATESTRUCTW*>(l);SetWindowLongPtrW(hwnd,GWLP_USERDATA,reinterpret_cast<LONG_PTR>(create->lpCreateParams));}
+        auto* self=reinterpret_cast<Impl*>(GetWindowLongPtrW(hwnd,GWLP_USERDATA));
+        if(message==WM_CLIPBOARDUPDATE&&self){self->callback();return 0;}
+        return DefWindowProcW(hwnd,message,w,l);
+    }
+#endif
+};
+ClipboardWatcher::ClipboardWatcher(std::function<void()> callback):impl_(std::make_unique<Impl>()){
+    impl_->callback=std::move(callback);
+#if defined(Q_OS_WIN)
+    if(QGuiApplication::platformName()!=QStringLiteral("windows"))return;
+    auto instance=GetModuleHandleW(nullptr);const auto name=L"ClipDeckClipboardObserver";
+    WNDCLASSW klass{};klass.lpfnWndProc=Impl::procedure;klass.hInstance=instance;klass.lpszClassName=name;
+    if(!RegisterClassW(&klass)&&GetLastError()!=ERROR_CLASS_ALREADY_EXISTS)return;
+    impl_->window=CreateWindowExW(0,name,L"",0,0,0,0,0,HWND_MESSAGE,nullptr,instance,impl_.get());
+    if(impl_->window&&!AddClipboardFormatListener(impl_->window)){DestroyWindow(impl_->window);impl_->window=nullptr;}
+#endif
+}
+ClipboardWatcher::~ClipboardWatcher(){
+#if defined(Q_OS_WIN)
+    if(impl_->window){RemoveClipboardFormatListener(impl_->window);DestroyWindow(impl_->window);}
+#endif
+}
 quint64 clipboardSequence(){
 #if defined(Q_OS_WIN)
     if(QGuiApplication::platformName()==QStringLiteral("windows"))return GetClipboardSequenceNumber();
@@ -121,9 +151,10 @@ ClipboardInfo clipboardInfo(){
         if(!valid||value!=1)out.secret=true;
         else out.allowedPolicyFormats.push_back(QString::fromWCharArray(marker));
     }
-    CloseClipboard();
-    out.sequence=clipboardSequence();
     out.source=windowProcess(GetClipboardOwner());
+    CloseClipboard();
+    const auto after=clipboardSequence();
+    if(after!=out.sequence){out.available=false;out.sequence=after;return out;}
     out.secret=out.secret||clip::passwordManager(utf(out.source))||clip::passwordManager(utf(windowProcess(GetForegroundWindow())));
 #elif defined(Q_OS_LINUX)
     if(auto* d=xdisplay()){
@@ -139,6 +170,41 @@ ClipboardInfo clipboardInfo(){
     }
 #endif
     return out;
+}
+bool passwordManagerRunning(){
+#if defined(Q_OS_WIN)
+    auto snapshot=CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS,0);
+    if(snapshot==INVALID_HANDLE_VALUE)return true; // fail closed in strict mode
+    PROCESSENTRY32W entry{};entry.dwSize=sizeof(entry);bool found=false;
+    if(!Process32FirstW(snapshot,&entry))found=true;
+    else do{if(clip::passwordManager(utf(QString::fromWCharArray(entry.szExeFile)))){found=true;break;}}while(Process32NextW(snapshot,&entry));
+    CloseHandle(snapshot);return found;
+#elif defined(Q_OS_LINUX)
+    QDir proc("/proc");if(!proc.isReadable())return true;
+    QDirIterator it(proc.absolutePath(),QDir::Dirs|QDir::NoDotAndDotDot,QDirIterator::NoIteratorFlags);
+    int count=0;
+    while(it.hasNext()){
+        auto path=it.next();bool numeric=false;it.fileName().toULongLong(&numeric);if(!numeric)continue;
+        if(++count>32768)return true;
+        QFile comm(path+"/comm");QByteArray process;
+        if(comm.open(QIODevice::ReadOnly)){process=comm.read(256).trimmed().toLower();if(clip::passwordManager(process.toStdString()))return true;}
+        if(clip::passwordManager(utf(QFileInfo(path+"/exe").symLinkTarget())))return true;
+        // Legacy KeePass may be hosted by Mono or Wine, so its executable
+        // path can identify only the runtime. Inspect bounded argv for these
+        // hosts, never retain the arguments or log them.
+        if(process.startsWith("mono")||process.startsWith("wine")){
+            QFile args(path+"/cmdline");
+            if(args.open(QIODevice::ReadOnly)){
+                for(const auto& arg:args.read(8192).split('\0')){
+                    auto name=arg.toLower();auto slash=qMax(name.lastIndexOf('/'),name.lastIndexOf('\\'));
+                    if(slash>=0)name=name.mid(slash+1);
+                    if(name=="keepass.exe"||name=="keepassxc.exe")return true;
+                }
+            }
+        }
+    }
+#endif
+    return false;
 }
 bool autostartEnabled(){
 #if defined(Q_OS_WIN)

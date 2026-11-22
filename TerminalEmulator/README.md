@@ -134,5 +134,10 @@ portable archives.
 Automatic updates: configure a trusted HTTPS release manifest in Settings.
 Packaging/release-example.json defines its schema. The app checks periodically,
 downloads updates, validates their SHA-256 and lets the user open the installer.
+The renderer shapes bounded Unicode grapheme clusters across adjacent terminal
+cells when their styles match, including some multi-cell emoji sequences. The
+terminal engine still determines cell widths; exact emoji layout depends on
+the engine and installed fonts.
+
 Until a real release feed is configured, no background network requests are
 made. There are no accounts or telemetry. This is not an unattended installer.

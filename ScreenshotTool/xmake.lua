@@ -1,5 +1,5 @@
 set_project("ScreenshotTool")
-set_version("1.0.0")
+set_version(os.getenv("APP_VERSION") or "1.0.0")
 set_languages("cxx20")
 add_rules("mode.debug", "mode.release")
 
@@ -31,6 +31,17 @@ for _, name in ipairs({"screenshottool", "screenshottool-tests", "screenshottool
     target(name)
         if name == "screenshottool" then
             add_rules("qt.quickapp")
+            add_files("AppIcon.qrc")
+            if is_plat("windows") then add_files("AppIcon.rc") end
+            on_load(function(target)
+                local version = os.getenv("APP_VERSION") or "1.0.0"
+                if not version:match("^%d+%.%d+%.%d+$") then raise("Invalid APP_VERSION") end
+                target:add("defines", 'APP_SUITE_VERSION="' .. version .. '"')
+                local repo = os.getenv("GITHUB_REPOSITORY") or ""
+                if repo:match("^[%w_.-]+/[%w_.-]+$") then
+                    target:add("defines", 'APP_SUITE_FEED="https://github.com/' .. repo .. '/releases/download/latest-builds/ScreenshotTool-update.json"')
+                end
+            end)
             add_files("App/main.cpp")
         else
             add_rules("qt.console")
@@ -47,7 +58,7 @@ for _, name in ipairs({"screenshottool", "screenshottool-tests", "screenshottool
         add_frameworks("QtCore", "QtGui", "QtWidgets", "QtQml", "QtQuick", "QtQuickControls2", "QtNetwork", "QtConcurrent")
         if is_plat("windows") then
             add_files("Platform/Windows.cpp")
-            add_syslinks("user32", "gdi32", "advapi32")
+            add_syslinks("user32", "gdi32", "advapi32", "d3d11", "dxgi", "windowsapp")
         elseif is_plat("macosx") then
             add_files("Platform/Mac.mm")
             add_frameworks("AppKit", "Carbon", "CoreGraphics", "ScreenCaptureKit")

@@ -13,8 +13,11 @@
 #include <QInputMethodEvent>
 #include <QInputMethod>
 #include <QHoverEvent>
+#include <QTextBoundaryFinder>
 #include <cmath>
 #include <algorithm>
+#include <array>
+#include <vector>
 
 namespace {constexpr qreal padding=5;}
 TerminalItem::TerminalItem(QQuickItem* parent):QQuickPaintedItem(parent){
@@ -90,14 +93,20 @@ void TerminalItem::paint(QPainter* p){
         return Style{fg,bg,bool(v.attrs.bold),bool(v.attrs.italic),bool(v.attrs.underline||cell.link),bool(v.attrs.strike),bool(v.attrs.conceal)};
     };
     QFont lastFont;bool haveFont=false;
+    // Metrics depend only on the bold/italic face, not colors or decorations.
+    // Compute each face once per paint rather than once per colored text run.
+    std::array<bool,4> gridFace{};
+    for(int i=0;i<4;++i){QFont f=font_;f.setBold(i&1);f.setItalic(i&2);gridFace[i]=std::abs(QFontMetricsF(f).horizontalAdvance('M')-cellW_)<0.03;}
+    std::vector<Style> styles;styles.reserve(cols);
     for(int row=0;row<rows;++row){
         auto cells=emu.line(size_t(top+row));
         auto y=padding+row*cellH_;
         int limit=std::min(cols,int(cells.size()));
+        styles.clear();for(int c=0;c<limit;++c)styles.push_back(style(cells[c],top+row,c));
         // Draw background runs (including empty cells with ANSI background colors).
         for(int i=0;i<limit;){
-            auto bg=style(cells[i],top+row,i).bg;int end=i+1;
-            while(end<limit&&style(cells[end],top+row,end).bg==bg)++end;
+            auto bg=styles[i].bg;int end=i+1;
+            while(end<limit&&styles[end].bg==bg)++end;
             if(bg!=defaultBg)p->fillRect(QRectF(padding+i*cellW_,y,(end-i)*cellW_,cellH_),bg);
             i=end;
         }
@@ -106,16 +115,29 @@ void TerminalItem::paint(QPainter* p){
         for(int i=0;i<limit;){
             auto& v=cells[i].value;
             if(term::Emulator::continuation(v)){++i;continue;}
-            auto st=style(cells[i],top+row,i);
+            const auto& st=styles[i];
             auto text=Session::cellText(v);
-            int end=i+std::max(1,int(v.width));
+            int end=std::min(limit,i+std::max(1,int(v.width)));
             bool ascii=v.width==1&&v.chars[0]<128&&!v.chars[1];
             if(ascii){
                 // Limit each shaping run; spaces and ASCII share the fixed grid.
                 while(end<limit&&end-i<128){
                     auto& next=cells[end].value;
-                    if(next.width!=1||next.chars[0]>=128||next.chars[1]||!(style(cells[end],top+row,end)==st))break;
+                    if(next.width!=1||next.chars[0]>=128||next.chars[1]||!(styles[end]==st))break;
                     text+=Session::cellText(next);++end;
+                }
+            }else{
+                // Some VT engines split an emoji ZWJ/flag sequence over cells.
+                // Shape the cluster together, without changing the terminal grid.
+                while(end<limit&&end-i<8&&text.size()<64){
+                    const auto& next=cells[end].value;
+                    if(term::Emulator::continuation(next)||!(styles[end]==st))break;
+                    auto suffix=Session::cellText(next);
+                    if(suffix.isEmpty()||text.size()+suffix.size()>64)break;
+                    auto joined=text+suffix;
+                    QTextBoundaryFinder finder(QTextBoundaryFinder::Grapheme,joined);
+                    finder.setPosition(text.size());if(finder.isAtBoundary())break;
+                    text=std::move(joined);end=std::min(limit,end+std::max(1,int(next.width)));
                 }
             }
             if(!st.conceal&&!text.trimmed().isEmpty()){
@@ -129,8 +151,7 @@ void TerminalItem::paint(QPainter* p){
                 }else{
                     // QPainter text runs use font advance; use individual glyph positions
                     // if the bold/italic face has a non-grid advance.
-                    QFontMetricsF m(f);
-                    if(std::abs(m.horizontalAdvance('M')-cellW_)<0.03)
+                    if(gridFace[int(st.bold)|int(st.italic)*2])
                         p->drawText(QPointF(padding+i*cellW_,y+baseline_),text);
                     else for(int c=i;c<end;++c)p->drawText(QPointF(padding+c*cellW_,y+baseline_),Session::cellText(cells[c].value));
                 }

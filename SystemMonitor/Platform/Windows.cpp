@@ -55,7 +55,7 @@ class Pdh {
 public:
     Pdh(){
         if(PdhOpenQueryW(nullptr,0,&query_)!=ERROR_SUCCESS)return;
-        for(auto path:{L"\\Processor Information(*)\\% Processor Time",L"\\PhysicalDisk(_Total)\\Disk Read Bytes/sec",L"\\PhysicalDisk(_Total)\\Disk Write Bytes/sec",L"\\Network Interface(*)\\Bytes Received/sec",L"\\Network Interface(*)\\Bytes Sent/sec",L"\\GPU Engine(*)\\Utilization Percentage",L"\\GPU Adapter Memory(*)\\Dedicated Usage"}){
+        for(auto path:{L"\\Processor Information(*)\\% Processor Time",L"\\PhysicalDisk(_Total)\\Disk Read Bytes/sec",L"\\PhysicalDisk(_Total)\\Disk Write Bytes/sec",L"\\Network Interface(*)\\Bytes Received/sec",L"\\Network Interface(*)\\Bytes Sent/sec",L"\\GPU Engine(*)\\Utilization Percentage",L"\\GPU Adapter Memory(*)\\Dedicated Usage",L"\\Thermal Zone Information(*)\\Temperature"}){
             PDH_HCOUNTER c=nullptr;if(PdhAddEnglishCounterW(query_,path,0,&c)==ERROR_SUCCESS)counters_[path]=c;
         }
     }
@@ -79,11 +79,12 @@ public:
     Number sum(const wchar_t* path){auto a=array(path);if(a.empty())return {};double s=0;for(auto& [n,v]:a)s+=v;return s;}
 };
 }
+void collectWindowsTrace(Raw&,bool);
 U ownPid(){return GetCurrentProcessId();}
 unsigned cpuCount(){static auto n=std::max<DWORD>(1,GetActiveProcessorCount(ALL_PROCESSOR_GROUPS));return n;}
 std::optional<U> processIdentity(U pid){Handle p(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,FALSE,DWORD(pid)));return p?identity(p.h):std::nullopt;}
-bool protectPriority(){return SetPriorityClass(GetCurrentProcess(),ABOVE_NORMAL_PRIORITY_CLASS)!=0;}
-Raw collectNative(bool details){
+bool protectPriority(){return SetPriorityClass(GetCurrentProcess(),HIGH_PRIORITY_CLASS)!=0||SetPriorityClass(GetCurrentProcess(),ABOVE_NORMAL_PRIORITY_CLASS)!=0;}
+Raw collectNative(bool details,bool trace){
     Raw r;static thread_local Pdh pdh;pdh.sample();
     FILETIME idle,kernel,userTime;if(GetSystemTimes(&idle,&kernel,&userTime)){
         U total=ft(kernel)+ft(userTime),busy=total-ft(idle);
@@ -135,7 +136,12 @@ Raw collectNative(bool details){
             a->Release();}
         factory->Release();
     }
-    metric(r,"Hardware temperatures",{},"°C","No general reliable Windows sensor API");
+    bool thermal=false;
+    for(auto& [name,kelvin]:pdh.array(L"\\Thermal Zone Information(*)\\Temperature")){
+        if(kelvin<150||kelvin>500)continue;
+        thermal=true;metric(r,"ACPI thermal zone "+name,kelvin-273.15,"°C","Firmware thermal zone; not necessarily CPU or GPU die temperature");
+    }
+    if(!thermal)metric(r,"Hardware temperatures",{},"°C","Thermal zones and vendor-specific sensors may be unavailable");
     Handle snapshot(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS,0));PROCESSENTRY32W e{};e.dwSize=sizeof(e);
     FILETIME now;GetSystemTimeAsFileTime(&now);
     if(snapshot&&Process32FirstW(snapshot.h,&e))do{
@@ -143,11 +149,14 @@ Raw collectNative(bool details){
         Handle h(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,FALSE,e.th32ProcessID));
         if(h){FILETIME c,x,k,u;if(GetProcessTimes(h.h,&c,&x,&k,&u)){p.p.identity=ft(c);p.cpu={(ft(k)+ft(u))*100,true};if(ft(now)>=ft(c))p.p.uptime=double(ft(now)-ft(c))/1e7;}
             PROCESS_MEMORY_COUNTERS_EX mem{};mem.cb=sizeof(mem);if(GetProcessMemoryInfo(h.h,reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&mem),sizeof(mem))){p.p.memory=double(mem.WorkingSetSize);p.p.virtualMemory=double(mem.PrivateUsage);}
+            // These are aggregate I/O transfer counters, not disk-only bytes.
+            IO_COUNTERS io{};if(GetProcessIoCounters(h.h,&io)){p.ioRead={io.ReadTransferCount,true};p.ioWrite={io.WriteTransferCount,true};}
             if(details){wchar_t path[32768];DWORD n=32768;if(QueryFullProcessImageNameW(h.h,0,path,&n))p.p.path=utf(path,int(n));p.p.command=command(h.h);p.p.user=user(h.h);}
         }
         r.processes.push_back(std::move(p));
     }while(Process32NextW(snapshot.h,&e));
-    r.warning="Exact per-process disk/network throughput requires ETW attribution; unavailable. Process virtual memory is private commit.";
+    r.warning="Per-process total I/O includes file, network and device transfers. Process virtual memory is private commit.";
+    collectWindowsTrace(r,trace);
     return r;
 }
 Result operateNative(const Request& r){

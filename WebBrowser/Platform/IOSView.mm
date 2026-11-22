@@ -189,6 +189,7 @@ IOSView::IOSView(QQuickItem* p):QQuickItem(p),state_(new State){
 IOSView::~IOSView(){if(tab_)views.remove(tab_->id());for(BrowserDownload* d in state_->delegate.pending)[d cancelIfUnconfirmed];state_->delegate.owner=nullptr;state_->view.navigationDelegate=nil;state_->view.UIDelegate=nil;[state_->view removeFromSuperview];delete state_;}
 void IOSView::setTab(Tab* t){if(t==tab_)return;tab_=t;if(!t)return;views[t->id()]=this;connect(t,&Tab::loadRequested,this,&IOSView::load);rebuild();load(t->url());emit changed();}
 void IOSView::rebuild(void* configuration){
+    ++findGeneration_;findResult_.clear();
     state_->delegate.owner=nullptr;[state_->view removeFromSuperview];auto c=configuration?(__bridge WKWebViewConfiguration*)configuration:[WKWebViewConfiguration new];
     if(!configuration){if(tab_&&tab_->privateMode()){if(!privateStore)privateStore=[WKWebsiteDataStore nonPersistentDataStore];c.websiteDataStore=privateStore;}else c.websiteDataStore=[WKWebsiteDataStore defaultDataStore];}
     c.allowsInlineMediaPlayback=YES;c.mediaTypesRequiringUserActionForPlayback=WKAudiovisualMediaTypeNone;
@@ -204,10 +205,18 @@ void IOSView::configureRules(){
     state_->applied=o;auto r=web::Rules::make(o["adBlock"].toBool(),o["adHosts"].toString().toStdString(),o["adExceptions"].toString().toStdString());
     int generation=++state_->generation;auto controller=state_->view.configuration.userContentController;[controller removeAllContentRuleLists];if(!r.enabled)return;
     QJsonArray rules,unless;for(auto& d:r.exceptions)unless.append("*"+QString::fromStdString(d));
-    for(auto& d:r.blocked){
+    auto append=[&](const std::string& d,const QString& suffix){
         auto domain=QString::fromStdString(d);domain.replace(".","\\.");
-        QJsonObject trigger{{"url-filter","^https?://([^/]*\\.)?"+domain+"[/:]"},{"load-type",QJsonArray{"third-party"}}};if(!unless.isEmpty())trigger["unless-domain"]=unless;
+        QJsonObject trigger{{"url-filter","^https?://([^/:]*\\.)?"+domain+suffix},{"load-type",QJsonArray{"third-party"}}};if(!unless.isEmpty())trigger["unless-domain"]=unless;
         rules.append(QJsonObject{{"trigger",trigger},{"action",QJsonObject{{"type","block"}}}});
+    };
+    for(auto& d:r.blocked)append(d,"[/:]");
+    for(const auto& [domain,prefixes]:r.paths)for(const auto& prefix:prefixes){
+        QString escaped;for(const auto c:QString::fromStdString(prefix)){
+            if(QStringLiteral(".+()[]{}^$|?*\\").contains(c))escaped+='\\';
+            escaped+=c;
+        }
+        append(domain,"(:[0-9]+)?"+escaped);
     }
     auto json=QJsonDocument(rules).toJson(QJsonDocument::Compact);auto hash=QCryptographicHash::hash(json,QCryptographicHash::Sha256).toHex();
     NSString* identifier=ns("browser-"+QString::fromLatin1(hash));QPointer<IOSView> guard(this);
@@ -233,6 +242,30 @@ void IOSView::goBack(){[state_->view goBack];}
 void IOSView::goForward(){[state_->view goForward];}
 void IOSView::reload(){[state_->view reload];}
 void IOSView::stop(){[state_->view stopLoading];}
+void IOSView::searchPage(QString text,bool backwards){
+    if(!state_->view)return;
+    auto generation=++findGeneration_;
+    if(text.isEmpty()){findResult_.clear();emit changed();}
+    WKFindConfiguration* config=[WKFindConfiguration new];config.backwards=backwards;config.wraps=YES;config.caseSensitive=NO;
+    QPointer<IOSView> guard(this);
+    [state_->view findString:ns(text) withConfiguration:config completionHandler:^(WKFindResult* result){
+        if(!guard||guard->findGeneration_!=generation||text.isEmpty())return;
+        guard->findResult_=result.matchFound?QStringLiteral("Match found"):QStringLiteral("No matches");emit guard->changed();
+    }];
+}
+void IOSView::changeZoom(int delta){
+    if(!state_->view)return;
+    CGFloat zoom=state_->view.pageZoom;
+    state_->view.pageZoom=delta==0?1.0:qBound<CGFloat>(0.25,zoom*(delta>0?1.1:1.0/1.1),5.0);
+}
+void IOSView::clearWebsiteData(bool cookies){
+    // Only the regular profile is affected, never an unrelated private session.
+    WKWebsiteDataStore* store=[WKWebsiteDataStore defaultDataStore];
+    NSSet* types=cookies?[NSSet setWithObject:WKWebsiteDataTypeCookies]:[NSSet setWithObjects:WKWebsiteDataTypeDiskCache,WKWebsiteDataTypeMemoryCache,nil];
+    [store removeDataOfTypes:types modifiedSince:[NSDate distantPast] completionHandler:^{
+        if(browser)browser->notify(cookies?QStringLiteral("Saved cookies cleared."):QStringLiteral("HTTP cache cleared."));
+    }];
+}
 void IOSView::report(bool committed,QString e){
     bool changedState=e!=error_||state_->progress!=loadProgress()||state_->loading!=loading()||state_->back!=canGoBack()||state_->forward!=canGoForward();
     error_=std::move(e);state_->progress=loadProgress();state_->loading=loading();state_->back=canGoBack();state_->forward=canGoForward();

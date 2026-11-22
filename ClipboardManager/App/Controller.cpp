@@ -1,3 +1,4 @@
+#include "DefaultFeed.hpp"
 #include "Controller.hpp"
 #include <QAction>
 #include <QApplication>
@@ -27,15 +28,7 @@ QString humanSize(quint64 n){
     if(n<1024*1024)return QString::number(n/1024.0,'f',1)+" KB";
     return QString::number(n/(1024.0*1024.0),'f',1)+" MB";
 }
-QIcon trayIcon(){
-    QPixmap pix(64,64);pix.fill(Qt::transparent);
-    QPainter p(&pix);p.setRenderHint(QPainter::Antialiasing);p.setPen(Qt::NoPen);
-    p.setBrush(QColor("#157a73"));p.drawRoundedRect(QRectF(4,4,56,56),13,13);
-    p.setPen(QPen(Qt::white,3));p.setBrush(Qt::NoBrush);p.drawRoundedRect(QRectF(18,18,28,34),4,4);
-    p.setBrush(QColor("#157a73"));p.drawRoundedRect(QRectF(24,12,16,12),3,3);
-    p.drawLine(24,32,40,32);p.drawLine(24,39,40,39);p.drawLine(24,46,35,46);
-    return QIcon(pix);
-}
+QIcon trayIcon(){return QIcon(":/AppIcon.png");}
 bool isFileMime(const QString& name){
     auto n=name.toLower();
     for(auto* s:{"text/uri-list","x-special/gnome-copied-files","application/x-kde-cutselection",
@@ -86,6 +79,12 @@ Controller::Controller(QString directory,QObject* parent):
     captureTimer_.setSingleShot(true);
     connect(&captureTimer_,&QTimer::timeout,this,&Controller::clipboardChanged);
     connect(clipboard_,&QClipboard::dataChanged,this,&Controller::queueClipboardCapture);
+    clipboardWatcher_=std::make_unique<native::ClipboardWatcher>([this]{
+        // Native notification may duplicate Qt's signal. Coalesce it before
+        // acquiring MIME contents, and ignore the clipboard we just restored.
+        const auto sequence=native::clipboardSequence();
+        if(sequence&&sequence!=lastSequence_)queueClipboardCapture();
+    });
 #if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
     // Independent of the QML window; polling is a cheap change-counter check,
     // not repeated reading/decoding of clipboard contents.
@@ -117,10 +116,10 @@ Controller::Controller(QString directory,QObject* parent):
         settings_.setValue("autostart",ok);
         if(!ok)setStatus(error);
     }
-    updater_.configure(settings_.value("updateFeed").toString());
+    updater_.configure(settings_.value("updateFeed", appSuiteDefaultFeed()).toString());
 }
 Controller::~Controller(){
-    closing_=true;clipboardPoll_.stop();captureTimer_.stop();queryTimer_.stop();engine_.reset();tray_.reset();
+    closing_=true;clipboardWatcher_.reset();clipboardPoll_.stop();captureTimer_.stop();queryTimer_.stop();engine_.reset();tray_.reset();
     if(worker_&&thread_.isRunning()){
         const bool persistent=settings_.value("persistent",true).toBool();
         auto path=storePath(false);
@@ -133,11 +132,15 @@ Controller::~Controller(){
 clip::fs::path Controller::storePath(bool persistent) const {
     return clip::path(bytes(directory_))/(persistent?"history":"session-history");
 }
+bool Controller::strictPrivacy() const {
+    return settings_.value("strictPrivacy",true).toBool();
+}
+void Controller::setStrictPrivacy(bool enabled){settings_.setValue("strictPrivacy",enabled);emit preferencesChanged();}
 QVariantMap Controller::preferences() const {
     return {{"maxEntries",settings_.value("maxEntries",100)},{"maxMiB",settings_.value("maxMiB",512)},
         {"persistent",settings_.value("persistent",true)},{"theme",settings_.value("theme","system")},
         {"shortcut",settings_.value("shortcut","Ctrl+Shift+V")},{"autostart",settings_.value("autostart",true)},
-        {"updateFeed",settings_.value("updateFeed","")}};
+        {"hideAfterCopy",settings_.value("hideAfterCopy",true)},{"strictPrivacy",strictPrivacy()},{"updateFeed",settings_.value("updateFeed", appSuiteDefaultFeed())}};
 }
 void Controller::setStatus(QString s){status_=std::move(s);emit statusChanged();}
 bool Controller::hasTray() const{return QSystemTrayIcon::isSystemTrayAvailable();}
@@ -196,7 +199,7 @@ void Controller::clipboardChanged(){
     // sequence is not grounds to ignore an event or a scheduled retry.
     lastSequence_=info.sequence;
     if(!info.available){retryClipboardCapture();return;}
-    if(info.secret||hasMarker(info.formats,info)){
+    if(info.secret||hasMarker(info.formats,info)||(strictPrivacy()&&native::passwordManagerRunning())){
         ++epoch_;
         QMetaObject::invokeMethod(worker_,[this]{if(store_)store_->protect({});},Qt::QueuedConnection);
         setStatus("Sensitive clipboard content excluded.");return;
@@ -266,7 +269,7 @@ void Controller::clipboardChanged(){
     if(!localFiles&&capture.preview.empty())capture.preview=capture.formats.empty()?"":capture.formats.front().type;
     // Reject changes/races and newly observed secret markers before anything is sent to storage.
     auto after=native::clipboardInfo();
-    if(after.secret||hasMarker(after.formats,after)){
+    if(after.secret||hasMarker(after.formats,after)||(strictPrivacy()&&native::passwordManagerRunning())){
         lastSequence_=after.sequence;setStatus("Sensitive clipboard content excluded.");return;
     }
     if(!after.available||retryCapture_||(info.sequence&&after.sequence!=info.sequence)){
@@ -336,10 +339,11 @@ void Controller::restore(const QString& id){
             }
             mime->setData(SelfMime,"1");writingClipboard_=true;clipboard_->setMimeData(mime);writingClipboard_=false;
             lastSequence_=native::clipboardSequence();
-            restoring_=false;setStatus("Restored to system clipboard. Paste normally.");hideUi();
+            restoring_=false;setStatus("Restored to system clipboard. Paste normally.");if(settings_.value("hideAfterCopy",true).toBool())hideUi();
         },Qt::QueuedConnection);
     },Qt::QueuedConnection);
 }
+void Controller::setHideAfterCopy(bool value){settings_.setValue("hideAfterCopy",value);settings_.sync();emit preferencesChanged();}
 void Controller::remove(const QString& id){
     if(!ready_||settingsBusy_)return;auto key=bytes(id);
     QMetaObject::invokeMethod(worker_,[this,key]{

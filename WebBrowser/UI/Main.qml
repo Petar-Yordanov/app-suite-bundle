@@ -12,15 +12,17 @@ ApplicationWindow {
     visible: true
     title: browser.current && browser.current.title ? browser.current.title + " - WebBrowser" : "WebBrowser"
     property string panel: ""
+    property bool finding: false
+    property var suggestions: []
     property bool pageFullScreen: false
     property bool dark: browser.options.theme === "Dark" || (browser.options.theme === "System" && Qt.styleHints.colorScheme === Qt.Dark)
-    palette.window: dark ? "#17191c" : "#f5f6f8"
-    palette.windowText: dark ? "#e7e8eb" : "#20242b"
-    palette.base: dark ? "#202329" : "#ffffff"
-    palette.alternateBase: dark ? "#2b2e35" : "#eceef2"
-    palette.text: dark ? "#e7e8eb" : "#20242b"
-    palette.button: dark ? "#2c3037" : "#e5e8ee"
-    palette.buttonText: dark ? "#e7e8eb" : "#20242b"
+    palette.window: win.dark ? "#17191c" : "#f5f6f8"
+    palette.windowText: win.dark ? "#e7e8eb" : "#20242b"
+    palette.base: win.dark ? "#202329" : "#ffffff"
+    palette.alternateBase: win.dark ? "#2b2e35" : "#eceef2"
+    palette.text: win.dark ? "#e7e8eb" : "#20242b"
+    palette.button: win.dark ? "#2c3037" : "#e5e8ee"
+    palette.buttonText: win.dark ? "#e7e8eb" : "#20242b"
     palette.highlight: "#3678cb"
     palette.highlightedText: "#ffffff"
     color: palette.window
@@ -55,17 +57,20 @@ ApplicationWindow {
         else if(panel==="Bookmarks") records.model=browser.bookmarks(filter.text)
     }
     function focusAddress() { panel=""; address.forceActiveFocus(); address.selectAll() }
-    function go() { panel=""; browser.go(address.text); address.focus=false }
+    function go() { panel=""; suggestions=[]; browser.go(address.text); address.focus=false }
+    function startFind() { if (!currentPage) return; panel=""; finding=true; findField.forceActiveFocus(); findField.selectAll() }
+    function endFind() { if(currentPage) currentPage.searchPage("",false); finding=false }
     function editItem(item, folder) {
         editor.record=item
         editor.folder=folder
         editor.nameText=item ? item.title : folder ? "" : browser.current.title
+        editUrl.text = folder ? "" : item ? item.url : browser.current.url.toString()
         editor.parents=browser.folders()
         editor.parentId=item ? item.parent : 0
         editor.open()
     }
     Connections { target: browser
-        function onCurrentChanged() { address.text=browser.current ? browser.current.url.toString() : ""; win.pageRevision++; if(win.pageFullScreen)win.setFullScreen(false) }
+        function onCurrentChanged() { win.finding=false; win.suggestions=[]; address.text=browser.current ? browser.current.url.toString() : ""; win.pageRevision++; if(win.pageFullScreen)win.setFullScreen(false) }
         function onHistoryChanged() { if(win.panel==="History") win.refresh() }
         function onBookmarksChanged() { if(win.panel==="Bookmarks") win.refresh() }
         function onMessageChanged() { toast.text=browser.message; toastTimer.restart() }
@@ -75,13 +80,17 @@ ApplicationWindow {
         function onChanged() { if(!address.activeFocus && browser.current) address.text=browser.current.url.toString() }
     }
     Connections {
+        target: downloads
+        function onRetryRequested(url) { win.panel=""; browser.newTab(url,false) }
+    }
+    Connections {
         target: Qt.platform.os==="ios" ? null : profiles.normal
-        function onDownloadRequested(request) { downloads.acceptDesktop(request,false); win.panel="Downloads" }
+        function onDownloadRequested(request) { downloads.acceptDesktop(request,false,browser.options.downloadDirectory); win.panel="Downloads" }
         ignoreUnknownSignals: true
     }
     Connections {
         target: Qt.platform.os==="ios" ? null : profiles.privateProfile
-        function onDownloadRequested(request) { downloads.acceptDesktop(request,true); win.panel="Downloads" }
+        function onDownloadRequested(request) { downloads.acceptDesktop(request,true,browser.options.downloadDirectory); win.panel="Downloads" }
         ignoreUnknownSignals: true
     }
     ColumnLayout {
@@ -109,6 +118,7 @@ ApplicationWindow {
                                 border.color: browser.current===browserTab?win.palette.highlight:"transparent"
                                 RowLayout {
                                     anchors.fill: parent; anchors.margins: 3; spacing: 1
+                                    Image { visible: browserTab.icon.toString().length>0; source: browserTab.icon; Layout.preferredWidth: 16; Layout.preferredHeight: 16; sourceSize.width: 16; sourceSize.height: 16 }
                                     Button { Layout.fillWidth: true; flat: true; text: (browserTab.privateMode?"[P] ":"")+(browserTab.title || browserTab.url.toString().replace("about:blank","New tab")); onClicked: browser.select(browserTab.id); contentItem: Label { text: parent.text; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter } }
                                     ToolButton { text: "×"; onClicked: browser.closeTab(browserTab.id) }
                                 }
@@ -116,7 +126,7 @@ ApplicationWindow {
                         }
                     }
                 }
-                ToolButton { text: "+"; onClicked: { browser.newTab("about:blank",false); win.focusAddress() } }
+                ToolButton { text: "+"; onClicked: { browser.homeTab(false); win.focusAddress() } }
                 ToolButton { text: "P+"; onClicked: { browser.newTab("about:blank",true); win.focusAddress() } }
                 ToolButton { text: "‹"; enabled: !!browser.current; onClicked: browser.moveTab(browser.current.id,-1) }
                 ToolButton { text: "›"; enabled: !!browser.current; onClicked: browser.moveTab(browser.current.id,1) }
@@ -129,11 +139,15 @@ ApplicationWindow {
             ToolButton { text: "←"; enabled: !!win.currentPage && win.currentPage.canGoBack; onClicked: win.currentPage.goBack() }
             ToolButton { text: "→"; enabled: !!win.currentPage && win.currentPage.canGoForward; onClicked: win.currentPage.goForward() }
             ToolButton { text: win.currentPage && win.currentPage.loading ? "×" : "↻"; enabled: !!win.currentPage; onClicked: win.currentPage.loading?win.currentPage.stop():win.currentPage.reload() }
+            Label { text: browser.current && browser.current.url.toString().startsWith("https:") ? "HTTPS" : browser.current && browser.current.url.toString().startsWith("http:") ? "HTTP" : ""; visible: text.length > 0; color: text==="HTTP"?"#d6604c":win.palette.text }
+            ToolButton { text: "Home"; onClicked: if(browser.current)browser.current.navigate(browser.options.homePage) }
             TextField {
                 id: address; Layout.fillWidth: true
                 placeholderText: "Search or enter a URL"; selectByMouse: true
                 text: browser.current ? browser.current.url.toString() : ""
                 onAccepted: win.go()
+                onTextEdited: suggestTimer.restart()
+                onActiveFocusChanged: if (!activeFocus) win.suggestions=[]
             }
             ToolButton { text: "☆"; onClicked: win.editItem(null,false) }
             ToolButton { text: "☰"; onClicked: mainMenu.popup()
@@ -144,9 +158,32 @@ ApplicationWindow {
                     MenuItem { text: "Downloads"; onTriggered: win.showPanel("Downloads") }
                     MenuItem { text: "Settings"; onTriggered: win.showPanel("Settings") }
                     MenuItem { text: "Reopen closed tab"; onTriggered: browser.reopen() }
+                    MenuItem { text: "Find on page"; enabled: !!win.currentPage; onTriggered: win.startFind() }
+                    MenuItem { text: "Zoom in"; enabled: !!win.currentPage; onTriggered: win.currentPage.changeZoom(1) }
+                    MenuItem { text: "Zoom out"; enabled: !!win.currentPage; onTriggered: win.currentPage.changeZoom(-1) }
+                    MenuItem { text: "Reset zoom"; enabled: !!win.currentPage; onTriggered: win.currentPage.changeZoom(0) }
                     MenuItem { text: "Fullscreen"; onTriggered: win.toggleFullScreen() }
                 }
             }
+        }
+        Timer { id:suggestTimer; interval:150; onTriggered: if(address.activeFocus) win.suggestions=browser.suggestions(address.text) }
+        ListView {
+            Layout.fillWidth:true; Layout.preferredHeight: Math.min(count,8)*38; visible:count>0 && win.panel===""
+            model:win.suggestions; clip:true
+            delegate: Button {
+                required property var modelData
+                width:ListView.view.width; height:38; focusPolicy:Qt.NoFocus
+                text: (modelData.title || "")+"  "+modelData.url
+                onClicked: { const u=modelData.url; win.suggestions=[]; browser.go(u); address.focus=false }
+            }
+        }
+        RowLayout {
+            visible: win.finding && !win.pageFullScreen; Layout.fillWidth:true
+            TextField { id:findField; Layout.fillWidth:true; placeholderText:"Find on page"; onTextEdited: if(win.currentPage)win.currentPage.searchPage(text,false); onAccepted: if(win.currentPage)win.currentPage.searchPage(text,false) }
+            Label { text:win.currentPage?win.currentPage.findResult:"" }
+            Button { text:"Previous"; onClicked:if(win.currentPage)win.currentPage.searchPage(findField.text,true) }
+            Button { text:"Next"; onClicked:if(win.currentPage)win.currentPage.searchPage(findField.text,false) }
+            Button { text:"Close"; onClicked:win.endFind() }
         }
         ProgressBar {
             Layout.fillWidth: true; implicitHeight: 3
@@ -170,7 +207,7 @@ ApplicationWindow {
                     }
                     onLoaded: win.pageRevision++
                     Binding { target: pageLoader.item; property: "current"; value: browser.current===pageLoader.browserTab; when: !!pageLoader.item }
-                    Binding { target: pageLoader.item; property: "covered"; value: win.panel!=="" || editor.opened || clearDialog.opened || deleteDialog.opened || mainMenu.opened || importDialog.visible || exportDialog.visible; when: !!pageLoader.item }
+                    Binding { target: pageLoader.item; property: "covered"; value: win.panel!=="" || editor.opened || cookieDialog.opened || clearDialog.opened || deleteDialog.opened || mainMenu.opened || importDialog.visible || exportDialog.visible; when: !!pageLoader.item }
                 }
             }
             Rectangle {
@@ -241,6 +278,7 @@ ApplicationWindow {
                                     Label { text:(entry.received/1048576).toFixed(1)+" MiB"; Layout.fillWidth:true }
                                     Button { text:"Pause"; visible:entry.canPause; onClicked:downloads.action(entry.id,"pause") }
                                     Button { text:"Resume"; visible:entry.canResume; onClicked:downloads.action(entry.id,"resume") }
+                                    Button { text:"Retry from start"; visible:entry.canRetry===true; onClicked:downloads.action(entry.id,"retry") }
                                     Button { text:"Cancel"; visible:entry.canCancel; onClicked:downloads.action(entry.id,"cancel") }
                                     Button { text:"Folder"; visible:entry.state==="Completed"&&Qt.platform.os!=="ios"; onClicked:downloads.action(entry.id,"folder") }
                                 }
@@ -261,18 +299,24 @@ ApplicationWindow {
                                 Button { text:"DuckDuckGo"; onClicked:browser.setOption("search","https://duckduckgo.com/?q=%s") }
                                 Button { text:"Bing"; onClicked:browser.setOption("search","https://www.bing.com/search?q=%s") }
                             }
+                            Label { text:"Default download folder (empty = system Downloads)"; visible:Qt.platform.os!=="ios" }
+                            TextField { visible:Qt.platform.os!=="ios"; Layout.fillWidth:true; text:browser.options.downloadDirectory; onEditingFinished:browser.setOption("downloadDirectory",text) }
+                            Label { text:"Home page" }
+                            TextField { Layout.fillWidth:true; text:browser.options.homePage; onEditingFinished:browser.setOption("homePage",text) }
                             Label { text:"Session and privacy"; font.bold:true }
+                            Button { text:"Clear cookies"; onClicked:cookieDialog.open() }
+                            Button { text:"Clear HTTP cache"; onClicked:{ if(Qt.platform.os==="ios") { if(win.currentPage)win.currentPage.clearWebsiteData(false) } else profiles.clearCache() } }
                             Repeater {
                                 model:[["restoreTabs","Restore open tabs"],["restoreSelection","Restore active tab"],["restoreClosed","Restore recently closed tabs"],["restoreSessionCookies","Persist session cookies (desktop)"],["recordHistory","Save regular browsing history"],["adBlock","Block known third-party ad/tracker hosts"],["allowSitePopups","Allow automatic site popups"]]
                                 CheckBox { required property var modelData; text:modelData[1]; checked:browser.options[modelData[0]]; enabled:modelData[0]!=="restoreSessionCookies"||Qt.platform.os!=="ios"; onToggled:browser.setOption(modelData[0],checked) }
                             }
-                            Label { text:"Additional blocked hostnames (hosts-file format)" }
+                            Label { text:"Blocked hosts and literal ABP domain/path rules (third party only)"; wrapMode:Text.WordWrap; Layout.fillWidth:true }
                             TextArea { Layout.fillWidth:true; Layout.preferredHeight:90; text:browser.options.adHosts; onActiveFocusChanged:if(!activeFocus)browser.setOption("adHosts",text) }
                             Label { text:"Allowlist hostnames (one per line)" }
                             TextArea { Layout.fillWidth:true; Layout.preferredHeight:75; text:browser.options.adExceptions; onActiveFocusChanged:if(!activeFocus)browser.setOption("adExceptions",text) }
                             Label { text:"Keyboard shortcuts"; font.bold:true }
                             Repeater {
-                                model:[["newTabKey","New tab"],["privateKey","Private tab"],["closeKey","Close tab"],["reopenKey","Reopen"],["addressKey","Address bar"],["nextKey","Next tab"],["previousKey","Previous tab"],["reloadKey","Reload"],["backKey","Back"],["forwardKey","Forward"],["bookmarkKey","Bookmark"],["historyKey","History"],["downloadsKey","Downloads"],["fullscreenKey","Fullscreen"]]
+                                model:[["newTabKey","New tab"],["privateKey","Private tab"],["closeKey","Close tab"],["reopenKey","Reopen"],["addressKey","Address bar"],["nextKey","Next tab"],["previousKey","Previous tab"],["reloadKey","Reload"],["backKey","Back"],["forwardKey","Forward"],["bookmarkKey","Bookmark"],["historyKey","History"],["downloadsKey","Downloads"],["fullscreenKey","Fullscreen"],["findKey","Find on page"],["zoomInKey","Zoom in"],["zoomOutKey","Zoom out"],["zoomResetKey","Reset zoom"]]
                                 RowLayout {
                                     required property var modelData
                                     Label { text:modelData[1]; Layout.fillWidth:true }
@@ -307,15 +351,17 @@ ApplicationWindow {
         onOpened:parentBox.currentIndex=Math.max(0,parents.findIndex(x=>Number(x.id)===parentId))
         contentItem:ColumnLayout {
             TextField { id:editName; Layout.fillWidth:true; placeholderText:"Name" }
+            TextField { id:editUrl; visible:!editor.folder; Layout.fillWidth:true; placeholderText:"https://example.com" }
             ComboBox { id:parentBox; Layout.fillWidth:true; model:editor.parents; textRole:"path"; valueRole:"id" }
         }
-        onAccepted: { const p=Number(parentBox.currentValue||0); if(record) browser.editBookmark(record.id,editName.text,p); else if(folder) browser.addFolder(editName.text,p); else if(browser.current) browser.addBookmark(editName.text,browser.current.url,p) }
+        onAccepted: { const p=Number(parentBox.currentValue||0); if(record) browser.editBookmark(record.id,editName.text,p,folder?"":editUrl.text); else if(folder) browser.addFolder(editName.text,p); else if(browser.current) browser.addBookmark(editName.text,editUrl.text,p) }
     }
+    Dialog { id:cookieDialog; title:"Clear saved cookies? You may be signed out."; modal:true; anchors.centerIn:Overlay.overlay; standardButtons:Dialog.Yes|Dialog.No; onAccepted:{ if(Qt.platform.os==="ios") { if(win.currentPage)win.currentPage.clearWebsiteData(true) } else profiles.clearCookies() } }
     Dialog { id:clearDialog; title:"Clear all browsing history?"; modal:true; anchors.centerIn:Overlay.overlay; standardButtons:Dialog.Yes|Dialog.No; onAccepted:browser.clearHistory() }
     Dialog { id:deleteDialog; property var record; title:"Delete this entry and any children?"; modal:true; anchors.centerIn:Overlay.overlay; standardButtons:Dialog.Yes|Dialog.No; onAccepted:if(win.panel==="Bookmarks")browser.removeBookmark(record.id);else browser.removeHistory(record.id) }
     FileDialog { id:importDialog; title:"Import bookmarks"; nameFilters:["Bookmark files (*.html *.htm *.json)"]; onAccepted:browser.importBookmarks(selectedFile) }
     FileDialog { id:exportDialog; title:"Export bookmarks"; fileMode:FileDialog.SaveFile; nameFilters:["HTML (*.html)","JSON (*.json)"]; defaultSuffix:"html"; onAccepted:browser.exportBookmarks(selectedFile) }
-    Shortcut { sequence:browser.options.newTabKey; onActivated:{browser.newTab("about:blank",false);win.focusAddress()} }
+    Shortcut { sequence:browser.options.newTabKey; onActivated:{browser.homeTab(false);win.focusAddress()} }
     Shortcut { sequence:browser.options.privateKey; onActivated:{browser.newTab("about:blank",true);win.focusAddress()} }
     Shortcut { sequence:browser.options.closeKey; onActivated:if(browser.current)browser.closeTab(browser.current.id) }
     Shortcut { sequence:browser.options.reopenKey; onActivated:browser.reopen() }
@@ -329,5 +375,9 @@ ApplicationWindow {
     Shortcut { sequence:browser.options.historyKey; onActivated:win.showPanel("History") }
     Shortcut { sequence:browser.options.downloadsKey; onActivated:win.showPanel("Downloads") }
     Shortcut { sequence:browser.options.fullscreenKey; onActivated:win.toggleFullScreen() }
-    Shortcut { sequence:"Escape"; onActivated:if(win.pageFullScreen)win.toggleFullScreen();else win.panel="" }
+    Shortcut { sequence:browser.options.findKey; enabled:!!win.currentPage; onActivated:win.startFind() }
+    Shortcut { sequence:browser.options.zoomInKey; enabled:!!win.currentPage; onActivated:win.currentPage.changeZoom(1) }
+    Shortcut { sequence:browser.options.zoomOutKey; enabled:!!win.currentPage; onActivated:win.currentPage.changeZoom(-1) }
+    Shortcut { sequence:browser.options.zoomResetKey; enabled:!!win.currentPage; onActivated:win.currentPage.changeZoom(0) }
+    Shortcut { sequence:"Escape"; onActivated:if(win.pageFullScreen)win.toggleFullScreen();else if(win.finding)win.endFind();else win.panel="" }
 }

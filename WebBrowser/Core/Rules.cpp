@@ -21,6 +21,9 @@ std::vector<std::string> parseHosts(std::string_view input){
     std::string copy(input);std::replace(copy.begin(),copy.end(),',','\n');
     std::istringstream lines(copy);std::string line;
     while(std::getline(lines,line)&&result.size()<25000){
+        auto start=line.find_first_not_of(" \t\r");
+        if(start==std::string::npos)continue;
+        if(line[start]=='!'||line[start]=='['||line[start]=='@'||line[start]=='|'||line.find("##")!=std::string::npos||line.find("#@#")!=std::string::npos)continue;
         if(auto hash=line.find('#');hash!=std::string::npos)line.resize(hash);
         std::istringstream tokens(line);std::string token;
         while(tokens>>token&&result.size()<25000){
@@ -32,11 +35,16 @@ static bool contains(const std::unordered_set<std::string>& domains,std::string 
     if(h.empty())return false;
     for(;;){if(domains.contains(h))return true;auto i=h.find('.');if(i==std::string::npos)return false;h.erase(0,i+1);}
 }
-bool Rules::blocks(std::string_view req,std::string_view first,bool main)const{
+bool Rules::blocks(std::string_view req,std::string_view first,bool main,std::string_view path)const{
     if(!enabled||main)return false;
     auto h=host(req),f=host(first);
     if(h.empty()||f.empty()||contains(exceptions,f)||domainMatch(h,f)||domainMatch(f,h))return false;
-    return contains(blocked,h);
+    if(contains(blocked,h))return true;
+    while(!h.empty()){
+        if(auto found=paths.find(h);found!=paths.end())for(const auto& prefix:found->second)if(path.starts_with(prefix))return true;
+        auto dot=h.find('.');if(dot==std::string::npos)break;h.erase(0,dot+1);
+    }
+    return false;
 }
 Rules Rules::make(bool enabled,std::string_view extra,std::string_view allow){
     Rules r;r.enabled=enabled;
@@ -44,6 +52,28 @@ Rules Rules::make(bool enabled,std::string_view extra,std::string_view allow){
     for(auto& h:parseHosts(defaults))r.blocked.insert(h);
     for(auto& h:parseHosts(extra))r.blocked.insert(h);
     for(auto& h:parseHosts(allow))r.exceptions.insert(h);
+    // Support the common, unambiguous ABP domain anchor syntax:
+    // ||example.com^ and ||example.com/path/ (optional $third-party).
+    // Skip exceptions, wildcards, regexes, cosmetic rules and unsupported
+    // options rather than silently turning them into broader blocking rules.
+    std::istringstream list{std::string(extra.substr(0,2*1024*1024))};std::string line;size_t count=0;
+    while(count<25000&&std::getline(list,line)){
+        auto start=line.find_first_not_of(" \t\r"),end=line.find_last_not_of(" \t\r");
+        if(start==std::string::npos||end-start>2048)continue;
+        auto rule=std::string_view(line).substr(start,end-start+1);
+        if(!rule.starts_with("||"))continue;
+        rule.remove_prefix(2);
+        if(rule.ends_with("$third-party"))rule.remove_suffix(12);
+        if(rule.find_first_of("$*|#?\\")!=rule.npos)continue;
+        auto split=rule.find_first_of("^/");if(split==rule.npos)continue;
+        auto domain=host(rule.substr(0,split));if(domain.empty())continue;
+        auto suffix=rule.substr(split);
+        if(suffix=="^"){r.blocked.insert(domain);++count;}
+        else if(suffix.starts_with("/")&&suffix.find('^')==suffix.npos){
+            auto& prefixes=r.paths[domain];
+            if(prefixes.size()<256){prefixes.emplace_back(suffix);++count;}
+        }
+    }
     return r;
 }
 std::string safeFilename(std::string_view input){

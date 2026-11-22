@@ -13,6 +13,12 @@ int main(){
     check(r.blocks("extra.example","example.org"),"custom rule");
     check(!web::Rules::make(false,"","").blocks("doubleclick.net","example.org"),"switch");
     check(web::parseHosts("0.0.0.0 FOO.Example\nfoo.example\n# a.example\n127.0.0.1 localhost").size()==1,"hosts parsing");
+    auto abp=web::Rules::make(true,"! ignore comment.example\n||tracker.example^$third-party\n||cdn.example/ads/\n||site.example^$script\n@@||exception.example^\nexample.org##.banner\n","trusted.example");
+    check(abp.blocks("sub.tracker.example","other.example"),"ABP domain");
+    check(abp.blocks("cdn.example","other.example",false,"/ads/image.png"),"ABP path");
+    check(!abp.blocks("cdn.example","other.example",false,"/images/ad.png"),"nonmatching path");
+    check(!abp.blocks("cdn.example","trusted.example",false,"/ads/image.png"),"path allowlist");
+    check(!abp.blocks("site.example","other.example")&&!abp.blocks("comment.example","other.example")&&!abp.blocks("exception.example","other.example"),"unsupported filters skipped");
     check(web::safeFilename("../../evil.exe")=="evil.exe","path traversal");
     check(web::safeFilename("CON.txt")=="_CON.txt","reserved names");
     check(web::safeFilename("..")=="download","empty filename");

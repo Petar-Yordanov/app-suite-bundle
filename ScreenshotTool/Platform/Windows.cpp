@@ -8,6 +8,17 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+#if __has_include(<winrt/Windows.Graphics.Capture.h>) && __has_include(<windows.graphics.capture.interop.h>)
+#define SHOT_WINRT_CAPTURE 1
+#include <d3d11.h>
+#include <dxgi.h>
+#include <windows.graphics.capture.interop.h>
+#include <windows.graphics.directx.direct3d11.interop.h>
+#include <winrt/Windows.Graphics.Capture.h>
+#include <winrt/Windows.Foundation.h>
+#include <winrt/Windows.Graphics.DirectX.Direct3D11.h>
+#include <chrono>
+#endif
 
 namespace shot::native {
 void initialize(){}
@@ -15,6 +26,56 @@ bool wayland(){return false;}
 bool requestPermission(){return true;}
 QString limits(){return "Protected content may be blank. Minimized or non-responsive windows may not be capturable.";}
 namespace {
+#ifdef SHOT_WINRT_CAPTURE
+// Capture the selected window through the compositor, including accelerated
+// windows. A single staging texture is read back into the final QImage.
+Result graphicsCapture(HWND window,bool cursor,bool& denied){
+    using namespace winrt;
+    using namespace winrt::Windows::Graphics::Capture;
+    using namespace winrt::Windows::Graphics::DirectX;
+    using namespace winrt::Windows::Graphics::DirectX::Direct3D11;
+    try{init_apartment(apartment_type::multi_threaded);}catch(...){return {{}, "Graphics Capture apartment unavailable."};}
+    struct Apartment{~Apartment(){uninit_apartment();}} apartment;
+    try{
+        if(!GraphicsCaptureSession::IsSupported())return {{}, "Graphics Capture unavailable."};
+        com_ptr<ID3D11Device> dev;com_ptr<ID3D11DeviceContext> ctx;
+        check_hresult(D3D11CreateDevice(nullptr,D3D_DRIVER_TYPE_HARDWARE,nullptr,D3D11_CREATE_DEVICE_BGRA_SUPPORT,nullptr,0,D3D11_SDK_VERSION,dev.put(),nullptr,ctx.put()));
+        auto dxgi=dev.as<IDXGIDevice>();com_ptr<::IInspectable> inspectable;
+        check_hresult(CreateDirect3D11DeviceFromDXGIDevice(dxgi.get(),inspectable.put()));
+        auto device=inspectable.as<IDirect3DDevice>();
+        auto interop=get_activation_factory<GraphicsCaptureItem,IGraphicsCaptureItemInterop>();
+        GraphicsCaptureItem item{nullptr};
+        check_hresult(interop->CreateForWindow(window,guid_of<GraphicsCaptureItem>(),put_abi(item)));
+        auto size=item.Size();if(!validSize({size.Width,size.Height}))return {{}, "Capture exceeds the memory limit."};
+        auto pool=Direct3D11CaptureFramePool::CreateFreeThreaded(device,DirectXPixelFormat::B8G8R8A8UIntNormalized,1,size);
+        auto session=pool.CreateCaptureSession(item);
+        struct Cleanup{GraphicsCaptureSession& session;Direct3D11CaptureFramePool& pool;~Cleanup(){try{session.Close();pool.Close();}catch(...){}}} cleanup{session,pool};
+        session.IsCursorCaptureEnabled(cursor);session.StartCapture();
+        Direct3D11CaptureFrame frame{nullptr};
+        const auto deadline=std::chrono::steady_clock::now()+std::chrono::milliseconds(1200);
+        do{frame=pool.TryGetNextFrame();if(frame)break;Sleep(10);}while(std::chrono::steady_clock::now()<deadline);
+        if(!frame)return {{}, "Compositor did not return a frame."};
+        auto content=frame.ContentSize();if(!validSize({content.Width,content.Height}))return {{}, "Window resized beyond capture limits."};
+        auto access=frame.Surface().as<::Windows::Graphics::DirectX::Direct3D11::IDirect3DDxgiInterfaceAccess>();
+        com_ptr<ID3D11Texture2D> source;check_hresult(access->GetInterface(__uuidof(ID3D11Texture2D),source.put_void()));
+        D3D11_TEXTURE2D_DESC desc{};source->GetDesc(&desc);
+        if(UINT(content.Width)>desc.Width||UINT(content.Height)>desc.Height)return {{}, "Window resized during capture."};
+        desc.Width=UINT(content.Width);desc.Height=UINT(content.Height);desc.MipLevels=1;desc.ArraySize=1;desc.Usage=D3D11_USAGE_STAGING;desc.BindFlags=0;desc.CPUAccessFlags=D3D11_CPU_ACCESS_READ;desc.MiscFlags=0;
+        com_ptr<ID3D11Texture2D> staging;check_hresult(dev->CreateTexture2D(&desc,nullptr,staging.put()));
+        D3D11_BOX box{0,0,0,desc.Width,desc.Height,1};ctx->CopySubresourceRegion(staging.get(),0,0,0,0,source.get(),0,&box);
+        D3D11_MAPPED_SUBRESOURCE mapped{};check_hresult(ctx->Map(staging.get(),0,D3D11_MAP_READ,0,&mapped));
+        QImage result(content.Width,content.Height,QImage::Format_RGB32);
+        if(!result.isNull())for(int y=0;y<result.height();++y){
+            auto* src=reinterpret_cast<const quint32*>(static_cast<const uchar*>(mapped.pData)+size_t(y)*mapped.RowPitch);
+            auto* dst=reinterpret_cast<quint32*>(result.scanLine(y));
+            for(int x=0;x<result.width();++x)dst[x]=src[x]|0xff000000u;
+        }
+        ctx->Unmap(staging.get(),0);
+        return {result,result.isNull()?QString("Cannot allocate captured image."):QString()};
+    }catch(const hresult_error& error){denied=error.code()==E_ACCESSDENIED;return {{},QString::fromWCharArray(error.message().c_str())};}
+    catch(...){return {{}, "Windows Graphics Capture failed."};}
+}
+#endif
 QRect rect(RECT r){return {int(r.left),int(r.top),int(r.right-r.left),int(r.bottom-r.top)};}
 QString str(const wchar_t* s){return QString::fromWCharArray(s);}
 struct Monitor {HMONITOR handle;QString name;QRect bounds;};
@@ -51,6 +112,13 @@ Result capture(const Target& target,bool cursor){
     if(window){RECT r{};if(!IsWindow(window)||IsIconic(window)||!GetWindowRect(window,&r))return {{},"Window is no longer available."};bounds=rect(r);}
     else {MONITORINFO info{};info.cbSize=sizeof(info);if(!GetMonitorInfoW(reinterpret_cast<HMONITOR>(quintptr(target.id)),&info))return {{},"Monitor was disconnected."};bounds=rect(info.rcMonitor);}
     if(!validSize(bounds.size()))return {{},"Capture exceeds the memory limit."};
+    if(window){DWORD affinity=0;if(GetWindowDisplayAffinity(window,&affinity)&&affinity!=WDA_NONE)return {{},"Window content is protected from capture."};}
+#ifdef SHOT_WINRT_CAPTURE
+    if(window){
+        // Keep existing PrintWindow fallback for unsupported capture APIs.
+        bool denied=false;auto captured=graphicsCapture(window,cursor,denied);if(denied||!captured.image.isNull())return captured;
+    }
+#endif
     HDC screen=GetDC(nullptr);if(!screen)return {{},"Cannot acquire the desktop device context."};
     HDC memory=CreateCompatibleDC(screen);BITMAPINFO bitmap{};bitmap.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);bitmap.bmiHeader.biWidth=bounds.width();bitmap.bmiHeader.biHeight=-bounds.height();bitmap.bmiHeader.biPlanes=1;bitmap.bmiHeader.biBitCount=32;bitmap.bmiHeader.biCompression=BI_RGB;
     void* pixels=nullptr;HBITMAP dib=CreateDIBSection(screen,&bitmap,DIB_RGB_COLORS,&pixels,nullptr,0);

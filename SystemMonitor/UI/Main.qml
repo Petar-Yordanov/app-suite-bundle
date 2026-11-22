@@ -22,9 +22,9 @@ ApplicationWindow {
     property var pendingOperation: null
     color: baseColor
     onClosing: function(close) {if(controller.busy)close.accepted=false}
-    palette.window: baseColor; palette.base: panelColor; palette.button: panelColor
-    palette.text: dark ? "#e6eaf2" : "#202737"; palette.windowText: palette.text
-    palette.buttonText: palette.text; palette.highlight: selection; palette.highlightedText: palette.text
+    palette.window: win.baseColor; palette.base: win.panelColor; palette.button: win.panelColor
+    palette.text: win.dark ? "#e6eaf2" : "#202737"; palette.windowText: win.dark ? "#e6eaf2" : "#202737"
+    palette.buttonText: win.dark ? "#e6eaf2" : "#202737"; palette.highlight: win.selection; palette.highlightedText: win.dark ? "#e6eaf2" : "#202737"
     function unavailable(v) { return v === null || v === undefined || (typeof v === "number" && !isFinite(v)) }
     function number(v, decimals) { return unavailable(v) ? "—" : Number(v).toFixed(decimals) }
     function capacity(v) {
@@ -96,7 +96,7 @@ ApplicationWindow {
                         Label {text: "Sort:"}
                         ComboBox {
                             id: sortRole; textRole: "label"; valueRole: "role"
-                            model: [{label:"CPU",role:"cpu"},{label:"Memory",role:"memory"},{label:"Name",role:"processName"},{label:"PID",role:"pid"},{label:"User",role:"user"},{label:"Disk read",role:"diskRead"},{label:"Disk write",role:"diskWrite"},{label:"Threads",role:"threads"},{label:"Uptime",role:"uptime"},{label:"Virtual memory",role:"virtualMemory"},{label:"Network upload",role:"networkUp"},{label:"Network download",role:"networkDown"}]
+                            model: [{label:"CPU",role:"cpu"},{label:"Memory",role:"memory"},{label:"Name",role:"processName"},{label:"PID",role:"pid"},{label:"User",role:"user"},{label:"Disk read",role:"diskRead"},{label:"Disk write",role:"diskWrite"},{label:"Total I/O read",role:"ioRead"},{label:"Total I/O write",role:"ioWrite"},{label:"Threads",role:"threads"},{label:"Uptime",role:"uptime"},{label:"Virtual memory",role:"virtualMemory"},{label:"Network upload estimate",role:"networkUp"},{label:"Network download estimate",role:"networkDown"}]
                             onActivated: controller.processes.order(currentValue,descending.checked)
                         }
                         CheckBox {id: descending; text: "Descending"; checked: true; onToggled: controller.processes.order(sortRole.currentValue,checked)}
@@ -104,7 +104,7 @@ ApplicationWindow {
                     Rectangle {
                         Layout.fillWidth: true; Layout.fillHeight: true; color: panelColor; border.color: lineColor; radius: 5; clip: true
                         Flickable {
-                            id: horizontal; anchors.fill: parent; anchors.margins: 1; contentWidth: Math.max(width, 1170); contentHeight: height
+                            id: horizontal; anchors.fill: parent; anchors.margins: 1; contentWidth: Math.max(width, 1535); contentHeight: height
                             flickableDirection: Flickable.HorizontalFlick; boundsBehavior: Flickable.StopAtBounds; clip: true
                             ScrollBar.horizontal: ScrollBar {policy: ScrollBar.AsNeeded}
                             ColumnLayout {
@@ -114,7 +114,7 @@ ApplicationWindow {
                                     Row {
                                         anchors.fill: parent
                                         Repeater {
-                                            model: [{name:"Name",role:"processName",w:240},{name:"PID",role:"pid",w:70},{name:"User",role:"user",w:155},{name:"CPU %",role:"cpu",w:80},{name:"Memory",role:"memory",w:106},{name:"Disk read",role:"diskRead",w:116},{name:"Disk write",role:"diskWrite",w:116},{name:"Threads",role:"threads",w:74},{name:"Uptime",role:"uptime",w:110}]
+                                            model: [{name:"Name",role:"processName",w:240},{name:"PID",role:"pid",w:70},{name:"User",role:"user",w:155},{name:"CPU %",role:"cpu",w:80},{name:"Memory",role:"memory",w:106},{name:"Disk read",role:"diskRead",w:116},{name:"Disk write",role:"diskWrite",w:116},{name:"I/O read",role:"ioRead",w:116},{name:"I/O write",role:"ioWrite",w:116},{name:"Net up",role:"networkUp",w:116},{name:"Net down",role:"networkDown",w:116},{name:"Threads",role:"threads",w:74},{name:"Uptime",role:"uptime",w:110}]
                                             delegate: ToolButton {
                                                 required property var modelData
                                                 width: modelData.w; height: 34; text: modelData.name
@@ -138,6 +138,10 @@ ApplicationWindow {
                                         required property var memory
                                         required property var diskRead
                                         required property var diskWrite
+                                        required property var ioRead
+                                        required property var ioWrite
+                                        required property var networkUp
+                                        required property var networkDown
                                         required property var threads
                                         required property var uptime
                                         width: processList.width; height: 30
@@ -145,7 +149,7 @@ ApplicationWindow {
                                         Row {
                                             anchors.fill: parent
                                             Repeater {
-                                                model: [{v:row.processName,w:240},{v:String(row.pid),w:70},{v:row.user||"—",w:155},{v:win.number(row.cpu,1),w:80},{v:win.capacity(row.memory),w:106},{v:win.throughput(row.diskRead),w:116},{v:win.throughput(row.diskWrite),w:116},{v:win.number(row.threads,0),w:74},{v:win.duration(row.uptime),w:110}]
+                                                model: [{v:row.processName,w:240},{v:String(row.pid),w:70},{v:row.user||"—",w:155},{v:win.number(row.cpu,1),w:80},{v:win.capacity(row.memory),w:106},{v:win.throughput(row.diskRead),w:116},{v:win.throughput(row.diskWrite),w:116},{v:win.throughput(row.ioRead),w:116},{v:win.throughput(row.ioWrite),w:116},{v:win.throughput(row.networkUp),w:116},{v:win.throughput(row.networkDown),w:116},{v:win.number(row.threads,0),w:74},{v:win.duration(row.uptime),w:110}]
                                                 Label {
                                                     required property var modelData
                                                     width: modelData.w; height: row.height; leftPadding: 8; rightPadding: 4
@@ -167,7 +171,7 @@ ApplicationWindow {
                             Label {text: "Executable: " + (chosen.path || "Unavailable"); Layout.fillWidth: true; elide: Text.ElideMiddle}
                             TextField {text: chosen.command || "Command line unavailable"; readOnly: true; Layout.fillWidth: true; selectByMouse: true; font.pixelSize: 12}
                             Label {
-                                text: "Virtual/private memory: " + win.capacity(chosen.virtualMemory) + "  •  Network: ↑ " + win.throughput(chosen.networkUp) + "  ↓ " + win.throughput(chosen.networkDown)
+                                text: "Virtual/private memory: " + win.capacity(chosen.virtualMemory) + "  •  Network estimate: ↑ " + win.throughput(chosen.networkUp) + "  ↓ " + win.throughput(chosen.networkDown)
                                 Layout.fillWidth: true; elide: Text.ElideRight; color: muted
                             }
                             Flow {
@@ -179,6 +183,7 @@ ApplicationWindow {
                                 Button {text: "Suspend"; onClicked: win.requestAction("suspend",0,"")}
                                 Button {text: "Resume"; onClicked: win.requestAction("resume",0,"")}
                                 Button {text: "Priority…"; onClicked: priorityDialog.open()}
+                                Button {text: "Copy details"; onClicked:controller.copyProcessDetails()}
                                 Button {text: "Affinity…"; enabled: Qt.platform.os !== "osx"; onClicked: affinityDialog.open()}
                                 CheckBox {id: elevatedBox; text: "Elevated"}
                             }
@@ -290,6 +295,7 @@ ApplicationWindow {
             ComboBox {model:["Light","Dark","System"];currentIndex:model.indexOf(controller.options.theme);onActivated:controller.setOption("theme",currentText);Layout.fillWidth:true}
             Label {text:"Refresh interval (milliseconds)"}
             SpinBox {from:250;to:10000;stepSize:250;value:controller.options.interval;editable:true;onValueModified:controller.setOption("interval",value)}
+            CheckBox {visible:Qt.platform.os==="linux"||Qt.platform.os==="osx"||Qt.platform.os==="windows";text:Qt.platform.os==="linux"?"Sample per-process TCP traffic (additional CPU overhead)":Qt.platform.os==="windows"?"Sample per-process disk and TCP/UDP via ETW (may require administrator)":"Sample per-process TCP/UDP traffic using nettop (additional CPU overhead)";checked:controller.options.tcpSampling;onToggled:controller.setOption("tcpSampling",checked)}
             Button {text:"Raise monitor scheduling priority";enabled:!controller.busy;onClicked:{settings.close();win.confirmOperation("Raise this monitor's scheduling priority? Administrator authorization may be requested.",function(){controller.raisePriority()})}}
             Repeater {
                 model:[{label:"Refresh shortcut",key:"refreshKey"},{label:"Search shortcut",key:"searchKey"},{label:"Settings shortcut",key:"settingsKey"}]

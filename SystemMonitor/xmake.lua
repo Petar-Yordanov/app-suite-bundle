@@ -1,5 +1,5 @@
 set_project("SystemMonitor")
-set_version("1.0.0")
+set_version(os.getenv("APP_VERSION") or "1.0.0")
 set_languages("cxx20")
 add_rules("mode.debug", "mode.release")
 
@@ -24,18 +24,29 @@ end
 local function native()
     add_files("Core/*.cpp", "Platform/Nvidia.cpp")
     if is_plat("windows") then
-        add_files("Platform/Windows.cpp")
-        add_syslinks("kernel32", "advapi32", "user32", "psapi", "pdh", "dxgi", "shell32", "ole32", "uuid")
+        add_files("Platform/Windows.cpp", "Platform/WindowsEtw.cpp")
+        add_syslinks("kernel32", "advapi32", "user32", "psapi", "pdh", "dxgi", "shell32", "ole32", "uuid", "tdh")
     elseif is_plat("macosx") then
-        add_files("Platform/Mac.cpp")
+        add_files("Platform/Mac.cpp", "Platform/MacNetwork.cpp")
         add_frameworks("IOKit", "CoreFoundation")
     else
-        add_files("Platform/Linux.cpp")
+        add_files("Platform/Linux.cpp", "Platform/LinuxTcp.cpp")
         add_syslinks("dl", "pthread")
     end
 end
 target("systemmonitor")
     add_rules("qt.quickapp")
+    add_files("AppIcon.qrc")
+    if is_plat("windows") then add_files("AppIcon.rc") end
+    on_load(function(target)
+        local version = os.getenv("APP_VERSION") or "1.0.0"
+        if not version:match("^%d+%.%d+%.%d+$") then raise("Invalid APP_VERSION") end
+        target:add("defines", 'APP_SUITE_VERSION="' .. version .. '"')
+        local repo = os.getenv("GITHUB_REPOSITORY") or ""
+        if repo:match("^[%w_.-]+/[%w_.-]+$") then
+            target:add("defines", 'APP_SUITE_FEED="https://github.com/' .. repo .. '/releases/download/latest-builds/SystemMonitor-update.json"')
+        end
+    end)
     native()
     add_files("App/*.cpp", "App/Controller.hpp", "App/Models.hpp", "App/Updater.hpp", "UI/resources.qrc")
     if use_qt_packages then add_packages("qt6quick", "qt6widgets") end
