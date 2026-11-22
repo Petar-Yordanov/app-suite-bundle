@@ -4,6 +4,7 @@
 
 #include <QAbstractItemModel>
 #include <QClipboard>
+#include <QDebug>
 #include <QDir>
 #include <QFile>
 #include <QGuiApplication>
@@ -47,6 +48,7 @@ int runUiSmoke(QGuiApplication& app, ArchiveController& backend,
         *finished = true;
         const auto utf8 = reason.toUtf8();
         std::fprintf(stderr, "SMOKE FAIL: %s\n", utf8.constData());
+        qCritical().noquote() << "SMOKE FAIL:" << reason << "(exit" << code << ")";
         app.exit(code);
     };
     auto succeed = [&app, finished] {

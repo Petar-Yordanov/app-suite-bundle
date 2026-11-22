@@ -21,7 +21,7 @@ done
 while IFS= read -r -d '' binary; do
   while read -r soname path; do
     if [[ -f "$path" && "$path" == "$QT_ROOT_DIR/"* ]]; then
-      cp -L -n "$path" "$bundle/lib/$soname" || true
+      if [[ ! -e "$bundle/lib/$soname" ]]; then cp -L "$path" "$bundle/lib/$soname"; fi
     fi
   done < <(LD_LIBRARY_PATH="$QT_ROOT_DIR/lib" ldd "$binary" 2>/dev/null | awk '$2 == "=>" && $3 ~ /^\// {print $1, $3}')
 done < <(find "$bundle" -type f \( -name 'webbrowser' -o -name 'QtWebEngineProcess' -o -name '*.so*' \) -not -path "$bundle/lib/*" -print0)
@@ -34,10 +34,10 @@ while IFS= read -r -d '' library; do
   patchelf --set-rpath "\$ORIGIN/$relative" "$library"
 done < <(find "$bundle/lib" "$bundle/plugins" "$bundle/qml" -type f -name '*.so*' -print0)
 cp README.md THIRD_PARTY.md COMPATIBILITY.md REQUIREMENTS.md "$bundle/"
-xvfb-run -a env -u LD_LIBRARY_PATH -u QT_PLUGIN_PATH -u QML2_IMPORT_PATH -u QML_IMPORT_PATH QT_QPA_PLATFORM=xcb LIBGL_ALWAYS_SOFTWARE=1 "$bundle/webbrowser" --smoke-test
+xvfb-run -a env -u LD_LIBRARY_PATH -u QT_PLUGIN_PATH -u QML2_IMPORT_PATH -u QML_IMPORT_PATH QT_QPA_PLATFORM=xcb QSG_RHI_BACKEND=opengl LIBGL_ALWAYS_SOFTWARE=1 "$bundle/webbrowser" --smoke-test
 compat_args=(--compatibility-smoke)
 if [[ "${WEBBROWSER_REQUIRE_CODECS:-0}" == 1 ]]; then compat_args+=(--require-codecs); fi
-xvfb-run -a env -u LD_LIBRARY_PATH -u QT_PLUGIN_PATH -u QML2_IMPORT_PATH -u QML_IMPORT_PATH QT_QPA_PLATFORM=xcb LIBGL_ALWAYS_SOFTWARE=1 "$bundle/webbrowser" "${compat_args[@]}"
+xvfb-run -a env -u LD_LIBRARY_PATH -u QT_PLUGIN_PATH -u QML2_IMPORT_PATH -u QML_IMPORT_PATH QT_QPA_PLATFORM=xcb QSG_RHI_BACKEND=opengl LIBGL_ALWAYS_SOFTWARE=1 "$bundle/webbrowser" "${compat_args[@]}"
 if [[ "${PORTABLE:-0}" == 1 ]]; then tar -czf artifacts/WebBrowser-linux-x64-portable.tar.gz -C dist WebBrowser; fi
 root="$PWD/dist/deb-root"
 mkdir -p "$root/DEBIAN" "$root/opt" "$root/usr/bin" "$root/usr/share/applications" "$root/usr/share/doc/webbrowser"

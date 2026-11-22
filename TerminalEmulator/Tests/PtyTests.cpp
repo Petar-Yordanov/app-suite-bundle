@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <iostream>
 #include <mutex>
+#include <regex>
 #include <thread>
 #ifdef _WIN32
 #include <windows.h>
@@ -23,6 +24,15 @@ static std::string size(){
     return std::to_string(s.ws_col)+"x"+std::to_string(s.ws_row);
 #endif
 }
+// ConPTY emits VT control sequences even between two pieces of the same
+// std::cout line (e.g. READY:\033[?25h80x24). Assert the printable
+// protocol markers, rather than requiring raw console output to be plain text.
+// Work on the accumulated output so sequences split across reads are handled.
+static std::string visibleText(const std::string& bytes) {
+    static const std::regex osc(R"(\x1b\][^\x07\x1b]*(\x07|\x1b\\))");
+    static const std::regex csi(R"(\x1b\[[0-?]*[ -/]*[@-~])");
+    return std::regex_replace(std::regex_replace(bytes, osc, ""), csi, "");
+}
 int main(int argc,char** argv){
     if(argc>1&&std::string_view(argv[1])=="--child"){
         std::cout<<"READY:"<<size()<<std::endl;
@@ -31,6 +41,9 @@ int main(int argc,char** argv){
         return 0;
     }
     if(term::quoteWindows(L"a b")!=L"\"a b\""||term::quoteWindows(L"x\\")!=L"\"x\\\\\"")return 1;
+    if(visibleText("READY:\x1b[?25h80x24")!="READY:80x24" ||
+       visibleText("\x1b]0;window title\x07INPUT:hello;SIZE:\x1b[0m100x40")!="INPUT:hello;SIZE:100x40")
+        return 1;
     std::mutex mu;std::condition_variable cv;std::string log;bool exited=false;int code=-1;
     term::Launch launch;auto path=std::filesystem::absolute(argv[0]).u8string();
     launch.executable={reinterpret_cast<const char*>(path.data()),path.size()};
@@ -43,13 +56,13 @@ int main(int argc,char** argv){
     if(!pty){std::cerr<<error<<'\n';return 1;}
     auto wait=[&](auto predicate){std::unique_lock l(mu);return cv.wait_for(l,std::chrono::seconds(8),predicate);};
     auto fail=[&](const char* message){pty->stop();std::lock_guard l(mu);std::cerr<<message<<": "<<log<<'\n';return 1;};
-    if(!wait([&]{return log.find("READY:80x24")!=std::string::npos;}))return fail("initial PTY dimensions");
+    if(!wait([&]{return visibleText(log).find("READY:80x24")!=std::string::npos;}))return fail("initial PTY dimensions");
     if(pty->cwd().empty())return fail("working directory");
     if(pty->write(std::string(term::QueueLimit+1,'x')))return fail("oversized queue accepted");
     pty->resize(40,100);
     std::this_thread::sleep_for(std::chrono::milliseconds(250));
     if(!pty->write("hello\r"))return fail("input rejected");
-    if(!wait([&]{return log.find("INPUT:hello;SIZE:100x40")!=std::string::npos&&exited;}))return fail("interactive input/resize/exit");
+    if(!wait([&]{return exited&&visibleText(log).find("INPUT:hello;SIZE:100x40")!=std::string::npos;}))return fail("interactive input/resize/exit");
     pty->stop();
     if(code!=0)return fail("unexpected exit code");
     std::cout<<"PTY input, output, resize, cwd, exit and bounded queue passed\n";

@@ -19,10 +19,38 @@ $crt = Get-ChildItem (Join-Path $vs "VC\Redist\MSVC\*\$arch\Microsoft.VC143.CRT"
 if (!$crt) { throw "MSVC $arch runtime not found" }
 Copy-Item "$($crt.FullName)\*.dll" $bundle
 Copy-Item README.md, FINDEX_LICENSE.txt $bundle
-$env:QT_QPA_PLATFORM = 'offscreen'
-$env:QT_QUICK_BACKEND = 'software'
-$check = Start-Process -FilePath "$bundle/Arky.exe" -ArgumentList '--smoke-test' -Wait -PassThru
-if ($check.ExitCode -ne 0) { throw 'Deployed UI regression failed' }
+# windeployqt deployed qwindows.dll, not qoffscreen.dll. Use the
+# same native platform as the successful source UI/MIME integration test.
+# Explicit bundle-local Qt paths also prevent the installed SDK masking
+# deployment errors on the runner.
+@'
+[Paths]
+Prefix = .
+Plugins = .
+QmlImports = qml
+'@ | Set-Content -Encoding ascii "$bundle/qt.conf"
+$savedEnv = @{}
+foreach ($key in @('QT_QPA_PLATFORM', 'QT_QUICK_BACKEND', 'QT_PLUGIN_PATH', 'QML2_IMPORT_PATH', 'QML_IMPORT_PATH', 'QT_QPA_PLATFORM_PLUGIN_PATH')) {
+    $savedEnv[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
+    [Environment]::SetEnvironmentVariable($key, $null, 'Process')
+}
+try {
+    $env:QT_QPA_PLATFORM = 'windows'
+    $env:QT_QUICK_BACKEND = 'software'
+    $stdout = Join-Path $PWD 'dist/arky-smoke-stdout.log'
+    $stderr = Join-Path $PWD 'dist/arky-smoke-stderr.log'
+    $startupLog = Join-Path ([IO.Path]::GetTempPath()) 'Arky-startup.log'
+    $check = Start-Process -FilePath "$bundle/Arky.exe" -WorkingDirectory $bundle -ArgumentList '--smoke-test' -RedirectStandardOutput $stdout -RedirectStandardError $stderr -Wait -PassThru
+    Get-Content $stdout, $stderr -ErrorAction SilentlyContinue
+    if ($check.ExitCode -ne 0) {
+        Get-Content $startupLog -Tail 100 -ErrorAction SilentlyContinue
+        throw "Deployed UI regression failed (exit $($check.ExitCode))"
+    }
+} finally {
+    foreach ($key in $savedEnv.Keys) {
+        [Environment]::SetEnvironmentVariable($key, $savedEnv[$key], 'Process')
+    }
+}
 & "$bundle/arky-cli.exe" --help
 if ($env:PORTABLE -eq '1') {
     Compress-Archive -Path "$bundle/*" -DestinationPath "artifacts/Arky-windows-$arch-portable.zip" -Force

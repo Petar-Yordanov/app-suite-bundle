@@ -42,6 +42,22 @@ class DiscoveryTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "No compatible"):
             dev.acquire_qt("WebBrowser", "6.11.3", "linux", "linux_gcc_64", (), False)
 
+    def test_windows_browser_uses_fixed_aqt_even_if_on_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sdk = root / "Qt/6.11.3/msvc2022_64"
+            with patch.object(dev, "HOST", "Windows"), patch.object(dev, "CACHE", root), \
+                 patch.object(dev.shutil, "which", return_value="old-aqt.exe"), \
+                 patch.object(dev, "run") as run, patch.object(dev, "discover_qt", return_value=sdk):
+                self.assertEqual(dev.acquire_qt("WebBrowser", "6.11.3", "windows",
+                 "win64_msvc2022_64", ("msvc2022_64",), True), sdk)
+                commands = [call.args[0] for call in run.call_args_list]
+                installer = commands[1]
+                self.assertIn("git+https://github.com/miurahr/aqtinstall.git@076e1659807d0b362a3ed684d54c2e9c775eb9c7", installer)
+                self.assertIn("py7zr==1.1.4", installer)
+                self.assertIn("qtserialport", commands[2])
+                self.assertNotIn("old-aqt.exe", commands[2])
+
 
 class PublicationTests(unittest.TestCase):
     def setUp(self):

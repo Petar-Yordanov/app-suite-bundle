@@ -18,9 +18,9 @@ ApplicationWindow {
     palette.windowText: dark ? "#e7e8eb" : "#20242b"
     palette.base: dark ? "#202329" : "#ffffff"
     palette.alternateBase: dark ? "#2b2e35" : "#eceef2"
-    palette.text: palette.windowText
+    palette.text: dark ? "#e7e8eb" : "#20242b"
     palette.button: dark ? "#2c3037" : "#e5e8ee"
-    palette.buttonText: palette.windowText
+    palette.buttonText: dark ? "#e7e8eb" : "#20242b"
     palette.highlight: "#3678cb"
     palette.highlightedText: "#ffffff"
     color: palette.window

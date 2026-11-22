@@ -44,14 +44,38 @@ jobs:
       - uses: xmake-io/github-action-setup-xmake@v1
         with:
           xmake-version: '3.1.1'
+      - name: Set up Python for Windows Qt installer
+        if: runner.os == 'Windows'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Qt WebEngine (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          # Qt 6.11 uses per-architecture repository XML. PyPI aqt 3.3.0
+          # cannot find it; pin the upstream implementation with that fix.
+          python -m pip install 'git+https://github.com/miurahr/aqtinstall.git@076e1659807d0b362a3ed684d54c2e9c775eb9c7' 'py7zr==1.1.4'
+          python -m aqt version
+          $qtParent = Join-Path $env:RUNNER_WORKSPACE 'Qt'
+          python -m aqt install-qt windows desktop $env:QT_VERSION win64_msvc2022_64 --base https://download.qt.io -O $qtParent -m qtwebengine qtwebchannel qtpositioning qtserialport
+          $qt = Join-Path $qtParent "$env:QT_VERSION/msvc2022_64"
+          if (!(Test-Path "$qt/bin/qmake.exe") -or !(Test-Path "$qt/bin/Qt6WebEngineCore.dll")) { throw "Incomplete Qt WebEngine SDK at $qt" }
+          "QT_ROOT_DIR=$qt" >> $env:GITHUB_ENV
+          "QT_PLUGIN_PATH=$qt/plugins" >> $env:GITHUB_ENV
+          "QML2_IMPORT_PATH=$qt/qml" >> $env:GITHUB_ENV
+          "$qt/bin" >> $env:GITHUB_PATH
       - name: Install Qt WebEngine
+        if: runner.os != 'Windows'
         uses: jurplel/install-qt-action@v4
         with:
           version: ${{ env.QT_VERSION }}
           host: ${{ matrix.qt_host }}
           target: desktop
           arch: ${{ matrix.qt_arch }}
-          modules: qtwebengine qtwebchannel qtpositioning
+          modules: qtwebengine qtwebchannel qtpositioning qtserialport
+          cache-key-prefix: install-qt-action-webbrowser-qt611-serialport
           cache: true
       - name: Linux browser dependencies
         if: runner.os == 'Linux'

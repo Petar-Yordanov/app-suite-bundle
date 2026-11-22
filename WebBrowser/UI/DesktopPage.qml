@@ -92,18 +92,25 @@ WebEngineView {
             ListView {
                 width:320;height:220;clip:true
                 model:shareDialog.pending?(shareType.currentIndex===0?shareDialog.pending.screensModel:shareDialog.pending.windowsModel):null
-                delegate:Button {
+                delegate:Item {
+                    id: shareRow
                     required property int index
                     required property string display
-                    width:320;text:display
-                    onClicked: {
-                        const request=shareDialog.pending
-                        if(!request)return
-                        const m=shareType.currentIndex===0?request.screensModel:request.windowsModel
-                        if(shareType.currentIndex===0)request.selectScreen(m.index(index,0))
-                        else request.selectWindow(m.index(index,0))
-                        shareDialog.pending=null
-                        shareDialog.close()
+                    width:320
+                    height: chooseButton.implicitHeight
+                    Button {
+                        id: chooseButton
+                        anchors.fill: parent
+                        text: shareRow.display
+                        onClicked: {
+                            const request=shareDialog.pending
+                            if(!request)return
+                            const m=shareType.currentIndex===0?request.screensModel:request.windowsModel
+                            if(shareType.currentIndex===0)request.selectScreen(m.index(shareRow.index,0))
+                            else request.selectWindow(m.index(shareRow.index,0))
+                            shareDialog.pending=null
+                            shareDialog.close()
+                        }
                     }
                 }
             }

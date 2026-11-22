@@ -112,20 +112,28 @@ def discover_qt(app, minimum, kits, explicit=None):
 def acquire_qt(app, minimum, host, arch, kits, allow_download):
     if not allow_download:
         raise RuntimeError(f"No compatible Qt {minimum}+ SDK found for {app}; install one or omit --no-download.")
-    if shutil.which("aqt"):
+    # aqt 3.3.0 cannot read the per-architecture Windows Qt 6.11 repository.
+    # Use the same pinned upstream fix as CI, even if an old aqt is on PATH.
+    browser_windows = app == "WebBrowser" and host == "windows"
+    if shutil.which("aqt") and not browser_windows:
         aqt = [shutil.which("aqt")]
     else:
-        venv = CACHE / "aqt-venv"
+        venv = CACHE / ("aqt-qt611-venv" if browser_windows else "aqt-venv")
         python = venv / ("Scripts/python.exe" if HOST == "Windows" else "bin/python")
         if not python.is_file():
             run([sys.executable, "-m", "venv", venv])
-        run([python, "-m", "pip", "install", "aqtinstall"])
+        if browser_windows:
+            run([python, "-m", "pip", "install",
+                 "git+https://github.com/miurahr/aqtinstall.git@076e1659807d0b362a3ed684d54c2e9c775eb9c7",
+                 "py7zr==1.1.4"])
+        else:
+            run([python, "-m", "pip", "install", "aqtinstall"])
         aqt = [python, "-m", "aqt"]
     qt_root = CACHE / "Qt"
     qt_root.mkdir(parents=True, exist_ok=True)
     # The regular SDK also includes the additional image plugins; share it
     # between all nine ordinary desktop projects. WebEngine stays separate.
-    modules = ["qtimageformats"] if app != "WebBrowser" else ["qtwebengine", "qtwebchannel", "qtpositioning"]
+    modules = ["qtimageformats"] if app != "WebBrowser" else ["qtwebengine", "qtwebchannel", "qtpositioning", "qtserialport"]
     run([*aqt, "install-qt", host, "desktop", minimum, arch, "--outputdir", qt_root, "-m", *modules])
     result = discover_qt(app, minimum, kits)
     if result is None:

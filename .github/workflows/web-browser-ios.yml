@@ -74,6 +74,10 @@ jobs:
         with:
           path: release-installers
           merge-multiple: true
+          # The build uploaded an actual ZIP file with archive:false.
+          # Do not extract the simulator .app from that release asset.
+          name: WebBrowser-ios-simulator-arm64.zip
+          skip-decompress: true
       - name: Publish verified release assets
         env:
           GH_TOKEN: ${{ github.token }}
